@@ -1,0 +1,8 @@
+Models and runtime binaries are NOT part of this repo (too large).
+*.gguf runtime/
+
+Auto-generated at runtime (machine-specific absolute paths inside).
+ui-settings.json models.json
+
+Logs and caches.
+*.log pycache/ *.pyc
