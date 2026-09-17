@@ -420,4 +420,4 @@ set SPEC_N_MAX=3 && start-gguf.bat 你的模型.gguf
 
 ### 授權
 
-目前未附授權檔。發布或再散布前請自行選擇並加入。
+MIT
