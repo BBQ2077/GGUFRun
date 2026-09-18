@@ -15,6 +15,8 @@ llama-server GUI 控制台（本地模型管理｜可攜式：自動以本程式
 - 防孤兒：關閉視窗自動收掉 server，程式結束 atexit 保底清理（只用 exact PID）
 - 顯示狀態與即時日誌
 只用標準庫 tkinter，不需額外安裝。建議用系統 python3 執行。
+
+版本：2.0（2026-09-18）
 """
 import os, re, sys, subprocess, threading, time, socket, json, shutil, urllib.request, atexit, webbrowser
 import tkinter as tk
@@ -163,14 +165,33 @@ def gguf_meta(path, want, limit=64):
 
 
 def gguf_arch(path):
-    """模型架構（general.architecture），例如 qwen3 / gemma4 / llama。"""
+    """模型架構（general.architecture），例如 qwen35 / gemma4 / spark2_5 / k2-horizon。"""
     a = gguf_meta(path, "general.architecture")
     return a if isinstance(a, str) else ""
 
 
-# 模型架構名稱（general.architecture）→ 需要哪一套 runtime 才能載入。
-# 空 tuple 表示目前已知沒有可用的 runtime。留空的架構預設為「不限制」。
-RUNTIME_ARCH = {}
+def gguf_mtp_layers(path):
+    """模型 header 的 <arch>.nextn_predict_layers（內建 MTP 層數）；沒有回 0。
+
+    有這個欄位 = 內建 MTP，可以用 --spec-type draft-mtp「不指定 -md」來啟用
+    （實測：`creating MTP draft context against the target model`，不需要外掛檔案）。
+    沒有這個欄位 = 內建 MTP 不存在；此時送 --spec-type draft-mtp 會直接載入失敗
+    （實測錯誤：context type MTP requested but model doesn't contain MTP layers）。
+    """
+    a = gguf_arch(path)
+    if not a:
+        return 0
+    v = gguf_meta(path, a + ".nextn_predict_layers", limit=120)
+    try:
+        return int(v)
+    except Exception:
+        return 0
+
+
+# 實測結果（不是猜的）→ 主模型架構：能載它的 runtime 目錄名（空 tuple＝現有 runtime 都載不動）
+#   spark2_5  : 官方 runtime/ 可正常載入並用 GPU
+#   k2-horizon: 實測連官方 runtime/ 也是 unknown model architecture
+RUNTIME_ARCH = {"spark2_5": ("runtime",), "k2-horizon": ()}
 
 
 def model_alias(path):
@@ -244,7 +265,7 @@ def looks_like_sidecar(path):
     """粗略判斷某個 .gguf 是否像「外掛小檔」（草稿/投機模型）。
 
     真正的草稿模型通常遠小於完整主模型；這裡用檔案大小當粗略訊號：
-    小於 1 GiB 視為外掛小檔（含 mtp 的 9B 主模型約 5 GiB，不會被誤判）。
+    小於 1 GiB 視為外掛小檔（自帶 mtp 的主模型通常 5 GiB 以上，不會被誤判）。
     """
     try:
         return os.path.getsize(path) < 1 * 2 ** 30
@@ -300,7 +321,7 @@ PORT = 18435
 # ---------- 模型清單：自動掃描 + 手動添加（models.json 長久儲存）----------
 def guess_drafter(model_path, extra=None):
     """依主模型配對草稿模型，回傳 (草稿路徑 or None, --spec-type 值 or None)。
-    手動登錄若有指定則優先；否則依檔名自動配對（例：dspark 家族配 dspark、gemma 配 mtp）。"""
+    手動登錄若有指定則優先；否則依檔名自動配對（bonsai→dspark / gemma→mtp）。"""
     if isinstance(extra, dict) and extra.get("drafter") and os.path.exists(extra["drafter"]):
         return extra["drafter"], (extra.get("spec") or "draft-mtp")
     low = os.path.basename(model_path).lower()
@@ -326,7 +347,7 @@ def guess_drafter(model_path, extra=None):
 
 
 def build_model_list():
-    """回傳 [(顯示字串, 完整路徑, 來源, 附加資料)]；來源 = auto（D 槽掃描）/ manual（手動）。"""
+    """回傳 [(顯示字串, 完整路徑, 來源, 附加資料)]；來源 = auto（掃描本程式資料夾）/ manual（手動添加）。"""
     out, seen = [], set()
     for fn, disp, _size in list_models():
         p = os.path.join(BASE, fn)
@@ -419,7 +440,7 @@ def drafter_mismatch(main_path, drafter_path):
 
 def build_drafter_list():
     """回傳 (下拉顯示清單, {顯示: 路徑})。特殊值："" = 自動配對、"-" = 不使用。"""
-    auto, none = "自動（依主模型配對）", "不使用（Normal）"
+    auto, none = "自動（依主模型配對）", "不使用外掛 DF（內建 MTP 仍會啟用）"
     vals, mp = [auto, none], {auto: "", none: "-"}
     for fn, p, size in list_drafters():
         d = f"{fn}   {size / 2 ** 30:.2f} GiB"
@@ -479,7 +500,74 @@ ADV_SPEC = [
     ("--spec-draft-p-min",    "sdpmin",  "草稿最低機率 (p-min)",   "貪婪解碼時的最低草稿機率。llama.cpp 預設 0.00"),
 ]
 
+# MoE 權重放置（專家層）相關參數。本 build 實查旗標：
+#   -ncmoe N           / --n-cpu-moe N             主模型前 N 層的專家權重放 CPU
+#   --spec-draft-ncmoe / -ncmoed                   草稿模型（DF）版（本 UI 不做）
+#   -ncffn N / --n-cpu-ffn N                       密集型 FFN（非 MoE 模型用）
+# 只在「主模型是 MoE」時才有意義；上限 = 該模型自己的層數（header 的 block_count）。
+# 留空 = 不送出該參數，完全沿用 llama.cpp 內建行為（全部照 -ngl 放 GPU）。
+# 模型載入模式相關（本 build 實查旗標）：
+#   -lm  / --load-mode   模型載入方式（預設 auto）
+#   -lzm / --lazy-mode   特定 tensor 是否延後從磁碟讀取（需要 mmap）
+ADV_LOAD = [
+    ("--load-mode", "loadmode", "模型載入模式 (-lm)",
+     "auto＝偵測不到就退回 mmap（預設）｜mmap＝記憶體映射｜mlock＝強制常駐 RAM｜mmap+mlock＝兩者"
+     "｜dio＝DirectIO｜none＝不用特殊模式"),
+    ("--lazy-mode", "lazymode", "延遲讀取模式 (-lzm)",
+     "on＝大型 tensor（如 per-layer embedding）改成要用才從磁碟讀｜auto＝只對大於 4GiB 的 tensor 這樣做（預設）"
+     "｜off＝一律常駐。需要 mmap"),
+]
+
+ADV_LORA = [
+    ("--lora", "lora", "LoRA 適配檔路徑",
+     "可搭配的 LoRA adapter（.gguf）路徑。留空＝不送這個參數。"),
+]
+
+ADV_EXTRA = [
+    ("", "extra_args", "自訂指令",
+     "直接附加到啟動指令最後。例：--lora-scaled x.gguf:1.5 -fa on"),
+]
+
+ADV_MOE = [
+    ("--n-cpu-moe", "ncmoe", "MoE 放 CPU 層數 (-ncmoe)",
+     "把前 N 層的專家（MoE）權重留在 CPU，其餘照 -ngl 上 GPU。\n"
+     "VRAM 不夠時用來「少放幾層專家上卡」換取不爆顯存；調太大生成會明顯變慢。\n"
+     "只在 MoE 模型有意義，N 的上限就是該模型自己的層數。"),
+    ("--n-cpu-ffn", "ncffn", "密集 FFN 放 CPU 層數 (-ncffn)",
+     "把前 N 層的「密集」FFN 權重留在 CPU。\n"
+     "這是給非 MoE（dense）模型用的；MoE 模型的專家權重請用上面的 -ncmoe。"),
+]
+
 SETTINGS_FILE = os.path.join(BASE, "ui-settings.json")
+PRESETS_FILE = os.path.join(BASE, "presets.json")   # 模板（具名參數組合）＋模型綁定
+
+
+def load_presets():
+    """讀回模板檔。回傳 {"templates": {名: {...}}, "bind": {模型路徑: 名}}"""
+    try:
+        with open(PRESETS_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            d.setdefault("templates", {})
+            d.setdefault("bind", {})
+            d.setdefault("default", "")
+            d.setdefault("runtime_of", {})
+            if isinstance(d["templates"], dict) and isinstance(d["bind"], dict):
+                if not isinstance(d["runtime_of"], dict):
+                    d["runtime_of"] = {}
+                return d
+    except Exception:
+        pass
+    return {"templates": {}, "bind": {}, "default": "", "runtime_of": {}}
+
+
+def save_presets(d):
+    try:
+        with open(PRESETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
 
 
 def load_settings():
@@ -691,11 +779,24 @@ def http_get(path, timeout=3, port=None):
         return {"_err": str(e)}
 
 
+def http_post(path, obj, timeout=5, port=None):
+    """POST JSON（給 /lora-adapters 動態調 LoRA 強度用，繞開 Windows 路徑冒號問題）。"""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port or PORT}{path}",
+            data=json.dumps(obj).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"_err": str(e)}
+
+
 class App:
     def __init__(self, root):
         self.root = root
         root.title(f"llama-server 控制台 — {BASE}")
-        # 視窗自適應螢幕：你的工作區只有 1280x649，寫死 900x700 會把日誌擠出畫面
+        # 視窗自適應螢幕：小螢幕（工作區小於約 1000x700）寫死 900x700 會把日誌擠出畫面
         _sw, _sh = root.winfo_screenwidth(), root.winfo_screenheight()
         _w = max(760, min(1000, _sw - 120))
         _h = max(460, min(800, _sh - 110))
@@ -757,7 +858,7 @@ class App:
         self.cb_drafter.pack(side="left", padx=4, pady=(0, 6))
         Tip(self.cb_drafter, "投機解碼用的草稿模型（DF / DSpark / MTP）。\n"
                              "「自動」＝依主模型家族配對（同家族才不會崩潰）。\n"
-                             "也可以指定某個檔，或選「不使用」。\n"
+                             "「不使用外掛 DF」＝不用外掛檔；若主模型內建 MTP，會自動用內建 MTP。\n"
                              "--spec-type 依檔名自動判斷（mtp / dflash / dspark / eagle）。\n"
                              "只在模式選「投機解碼」時才生效；選擇會自動記住（下次開啟還在）。")
         b_dadd = ttk.Button(row2, text="➕ 添加 DF", command=lambda: self._add_model("drafter"))
@@ -783,6 +884,8 @@ class App:
             return (dr, spec, "自動配對") if dr else (None, None, "自動配對：找不到")
 
         self._resolve_drafter = _resolve_drafter
+        # 供模板方法（_tpl_bind/_tpl_unbind）在綁定後刷新模型資訊列
+        self._sync_model_fn = None
 
         def _sync_model(*_a):
             p = self.model_path()
@@ -821,24 +924,44 @@ class App:
             if dr:
                 txt = f"✅ {gib:.2f} GiB｜DF：{os.path.basename(dr)}（{spec}）｜{how}"
             elif self.drafter.get() == self._drafters[1]:
-                txt = f"✅ {gib:.2f} GiB｜不使用草稿模型 → 純主模型解碼（Normal）"
+                if _mode is not None and _mode.get() == "dspark":
+                    _nl = gguf_mtp_layers(p)
+                    txt = (f"✅ {gib:.2f} GiB｜不使用外掛 DF → 主模型內建 MTP"
+                           f"（nextn_predict_layers={_nl}）") if _nl > 0 else \
+                          (f"✅ {gib:.2f} GiB｜不使用外掛 DF，且主模型沒有內建 MTP"
+                           f"→ 純主模型解碼")
+                else:
+                    txt = f"✅ {gib:.2f} GiB｜不使用草稿模型 → 純主模型解碼（Normal）"
             else:
                 txt = f"✅ {gib:.2f} GiB｜找不到可搭配的草稿模型 → 投機解碼會自動改用 Normal"
             self.lbl_model.config(text=txt + warn, foreground="#b70" if warn else "#2a7")
 
         self.model.trace_add("write", _sync_model)
         self.drafter.trace_add("write", _sync_model)
+        self._sync_model_fn = _sync_model
         _sync_model()
 
         # --- 設定區 ---
+        # B：「更多設定」開關移到整區最上面，視窗再矮也一定看得到（原本在最下面，
+        #    小視窗時會落在折線以下，使用者以為「沒有這個功能」）。
+        _bar = ttk.Frame(inner)
+        _bar.pack(fill="x", padx=10, pady=(8, 0))
+        self.more = tk.BooleanVar(value=False)
+        self.btn_more = ttk.Button(_bar, text="▸ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數）",
+                                   command=self._toggle_more)
+        self.btn_more.pack(side="left")
+
         cfg = ttk.LabelFrame(inner, text="啟動設定")
-        cfg.pack(fill="x", padx=10, pady=8)
+        cfg.pack(fill="x", padx=10, pady=(4, 8))
         cfg.columnconfigure(1, weight=1)
 
         # 不常改的項目收進可折疊區塊（預設收合，讓日誌拿得到高度）
         advf = ttk.Frame(cfg)
         advf.grid(row=4, column=0, columnspan=3, sticky="ew")
-        advf.columnconfigure(1, weight=1)
+        # 空間不足時：讓「說明欄」(column 2) 承擔壓縮，輸入欄位 (column 1) 保留固定寬度。
+        # （若把 weight 放在 column 1，Tk 會優先把它壓成 0 寬 → 輸入框整排消失）
+        advf.columnconfigure(1, weight=0, minsize=110)
+        advf.columnconfigure(2, weight=1)
         self.advf = advf
 
         ttk.Label(cfg, text="模式").grid(row=0, column=0, sticky="w", padx=6, pady=4)
@@ -850,8 +973,9 @@ class App:
             rb = ttk.Radiobutton(mf, text=lab, value=val, variable=self.mode)
             rb.pack(side="left", padx=4)
             Tip(rb, "只用主模型解碼，最單純、最省資源" if val == "normal"
-                    else "自動配對草稿模型做投機解碼（同家族才會配對，如 dspark 家族→dspark、gemma→mtp）。\n"
-                         "若這個模型沒有可搭配的草稿模型，會自動改用 Normal 並在日誌提醒")
+                    else "投機解碼：DF 選「自動」＝配外掛草稿模型（同家族才配，如 gemma→mtp）；\n"
+                         "DF 選「不使用外掛 DF」＝改用主模型自己內建的 MTP（需模型有 nextn_predict_layers）。\n"
+                         "若兩者都沒有，會以純主模型解碼啟動並在日誌提醒")
         # 模式切換時同步更新模型狀態列（DF 在 Normal 模式下不會生效的提醒）
         self.mode.trace_add("write", lambda *_a: _sync_model())
 
@@ -893,30 +1017,113 @@ class App:
         ttk.Label(cfg, text="KV 快取壓縮格式：q4_0 最省、f16 最精確",
                   foreground="#666").grid(row=0, column=2, sticky="w", padx=6)
 
+        # --- 進階取樣參數變數（本區的 MoE 欄位與「⚙ 進階取樣設定」視窗共用同一個 dict）---
+        self.adv = {}
+        for _r in ADV_CORE:
+            self.adv[_r[1]] = tk.StringVar(value=_r[4])
+        for _r in ADV_OPT:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出該參數
+        for _r in ADV_SPEC:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
+        for _r in ADV_MOE:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（全部照 -ngl 放 GPU）
+        for _r in ADV_LOAD:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
+        for _r in ADV_LORA:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出
+        for _r in ADV_EXTRA:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出
+        # 思考強度（--reasoning-effort）：有專屬 UI，但共用 adv 字典（模板/存檔才會一起記）
+        self.adv["rea_effort"] = tk.StringVar(value="")
+        # LoRA 強度（scale）：非命令列旗標，改用啟動後 POST /lora-adapters 套用
+        # （--lora-scaled 的 FNAME:SCALE 格式在 Windows 會與磁碟機代號 "D:" 衝突）
+        self.adv["lora_scale"] = tk.StringVar(value="")
+
+        # 思考模式（-rea auto/on/off）：本 build 官方預設就是 auto
+        ttk.Label(advf, text="思考模式（-rea）").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.think = tk.StringVar(value="auto")
+        _cb_rea = ttk.Combobox(advf, textvariable=self.think, width=10, state="readonly",
+                               values=["auto", "on", "off"])
+        _cb_rea.grid(row=1, column=1, sticky="w")
+        ttk.Label(advf, text="auto＝依 chat template 自動偵測（llama.cpp 預設）\n"
+                             "on＝強制思考｜off＝跳過思考直接回答（通常快很多）",
+                  foreground="#666", justify="left", wraplength=430).grid(
+            row=1, column=2, sticky="w", padx=6)
+        Tip(_cb_rea, "旗標：-rea / --reasoning [on|off|auto]\n"
+                     "本 build 官方預設是 auto（依模型的 chat template 決定要不要思考）。\n"
+                     "on＝一定先思考再回答；off＝跳過思考直接回答（通常快很多）。")
+
+        # 思考強度（--reasoning-effort）：交給 chat template 的「用力程度」
+        # 可自由輸入的下拉（有些模型自訂層級名稱，所以不鎖死）
+        ttk.Label(advf, text="思考強度（--reasoning-effort）").grid(
+            row=2, column=0, sticky="w", padx=6, pady=4)
+        _cb_eff = ttk.Combobox(advf, textvariable=self.adv["rea_effort"], width=10,
+                               values=["default", "minimal", "low", "medium", "high", "xhigh", "max"])
+        _cb_eff.grid(row=2, column=1, sticky="w")
+        ttk.Label(advf, text="default＝沿用 chat template 自己的預設（官方預設值）\n"
+                             "★ 只有 chat template 認得 reasoning_effort 的模型才有效，其他會忽略",
+                  foreground="#666", justify="left", wraplength=430).grid(
+            row=2, column=2, sticky="w", padx=6)
+        Tip(_cb_eff, "旗標：--reasoning-effort LEVEL（無簡寫）\n"
+                     "官方預設值：default（＝不指定，由模型 chat template 決定）。\n"
+                     "可填 default / minimal / low / medium / high / xhigh / max，\n"
+                     "也可自由輸入其他值（少數模型模板有自訂層級）。\n"
+                     "留空＝完全不送這個參數。\n"
+                     "★ 它跟「思考預算」不同：這一項是語意層級，預算是硬性 token 上限。")
+
         # 思考預算（--reasoning-budget）
-        ttk.Label(advf, text="思考預算（--reasoning-budget）").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(advf, text="思考預算（--reasoning-budget）").grid(row=3, column=0, sticky="w", padx=6, pady=4)
         self.rbud = tk.StringVar(value="-1")
         ttk.Combobox(advf, textvariable=self.rbud, width=10,
-                     values=["-1", "64", "128", "256", "512", "1024", "2048", "4096"]).grid(
-            row=1, column=1, sticky="w")
-        ttk.Label(cfg, text="限制思考長度，越小回覆越快（實測 0 無效）",
-                  foreground="#666").grid(row=1, column=2, sticky="w", padx=6)
+                     values=["-1", "0", "64", "128", "256", "512", "1024", "2048", "4096"]).grid(
+            row=3, column=1, sticky="w")
+        ttk.Label(advf, text="限制思考長度，越小回覆越快｜0＝立即結束思考（官方語意）",
+                  foreground="#666").grid(row=3, column=2, sticky="w", padx=6)
+
+        # MoE 權重放置（-ncmoe / -ncffn）：只在主模型是 MoE 時有意義
+        # 用自由輸入（不用下拉）：可填範圍隨模型而異，寫死預設值會誤導
+        ttk.Label(advf, text="MoE 放 CPU 層數 (-ncmoe)").grid(
+            row=4, column=0, sticky="w", padx=6, pady=4)
+        self.ncmoe = ttk.Entry(advf, textvariable=self.adv["ncmoe"], width=12)
+        self.ncmoe.grid(row=4, column=1, sticky="w")
+        ttk.Label(advf, text="前 N 層的專家權重留在 CPU（留空＝不送，全部照 -ngl 上 GPU）\n"
+                             "VRAM 不夠時用來少放幾層專家上卡；填 0＝全部照 -ngl",
+                  foreground="#666", justify="left", wraplength=430).grid(
+            row=4, column=2, sticky="w", padx=6)
+        Tip(self.ncmoe, "旗標：--n-cpu-moe N（簡寫 -ncmoe）\n"
+                        "把「前 N 層」的 MoE 專家權重留在系統 RAM，其餘層照 -ngl 放 GPU。\n"
+                        "用途：顯存不夠時少放幾層專家上卡，避免爆 VRAM（生成會變慢）。\n"
+                        "可填 0 到主模型的層數為止（層數看模型 header 的 block_count）。\n"
+                        "留空＝完全不送這個參數（llama.cpp 預設行為）。")
+
+        ttk.Label(advf, text="密集 FFN 放 CPU 層數 (-ncffn)").grid(
+            row=5, column=0, sticky="w", padx=6, pady=4)
+        self.ncffn = ttk.Entry(advf, textvariable=self.adv["ncffn"], width=12)
+        self.ncffn.grid(row=5, column=1, sticky="w")
+        ttk.Label(advf, text="前 N 層的密集 FFN 權重留在 CPU（留空＝不送）\n"
+                             "這是給非 MoE（dense）模型用的；MoE 的專家權重請用上面的 -ncmoe",
+                  foreground="#666", justify="left", wraplength=430).grid(
+            row=5, column=2, sticky="w", padx=6)
+        Tip(self.ncffn, "旗標：--n-cpu-ffn N（簡寫 -ncffn）\n"
+                        "把「前 N 層」的密集 FFN 權重留在系統 RAM。\n"
+                        "官方說明：dense 模型用這個；MoE 的專家權重要用 --n-cpu-moe。")
 
         opts = ttk.Frame(advf)
-        opts.grid(row=2, column=0, columnspan=3, sticky="w", padx=6, pady=4)
+        opts.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=4)
         self.fa = tk.BooleanVar(value=True)
         self.nkvo = tk.BooleanVar(value=True)
-        self.think = tk.BooleanVar(value=True)
         for _i, (_txt, _var, _desc) in enumerate([
                 ("Flash-Attn（-fa on）", self.fa, "加速注意力計算並省記憶體，建議常開"),
                 ("KV 放系統 RAM（-nkvo）", self.nkvo, "KV 改放主記憶體，可跑大 Context 但生成變慢"),
-                ("思考模式（-rea on/off）", self.think, "開啟＝先思考再回答；關閉＝直接回答（快很多）"),
                 ("Jinja 聊天模板（--jinja）", self.jinja,
                  "用模型內建的 Jinja 聊天模板（Gemma 等新模型需要）。本 build 預設已開；取消勾選＝送 --no-jinja")]):
             _chk = ttk.Checkbutton(opts, text=_txt, variable=_var)
             _chk.grid(row=_i, column=0, sticky="w")
             ttk.Label(opts, text=_desc, foreground="#666").grid(row=_i, column=1, sticky="w", padx=12)
             Tip(_chk, _desc)
+
+        # 模型載入模式（-lm / -lzm）只在「進階取樣設定」視窗的「載入模式」分頁，
+        # 不在此處重複（避免同一組參數兩處輸入）。
 
         # Jinja 開關變動時，同步更新模型狀態列的提醒
         self.jinja.trace_add("write", lambda *_a: _sync_model())
@@ -927,7 +1134,7 @@ class App:
         e_port.grid(row=7, column=1, sticky="w")
         ttk.Label(cfg, text="本地服務埠（網頁／API：http://127.0.0.1:埠/）",
                   foreground="#666").grid(row=7, column=2, sticky="w", padx=6)
-        Tip(e_port, "llama-server 監聽的埠。\n網頁按鈕與自訂 API 用戶端都用這個埠。\n"
+        Tip(e_port, "llama-server 監聽的埠。\n網頁按鈕與 OpenAI 相容用戶端（含各種前端）都用這個埠。\n"
                     "伺服器回報的模型名（--alias）會自動跟著主模型變；\n"
                     "用戶端就算填別的名字也能連（實測 model 欄位不影響）。")
 
@@ -938,30 +1145,18 @@ class App:
         self.cb_runtime.grid(row=8, column=1, sticky="w")
         # 換執行檔也要重算狀態列（架構支援度會跟著變）
         self.runtime.trace_add("write", lambda *_a: _sync_model())
+        # 手動換執行檔 → 記住「這顆模型用這套」（下次選到它自動還原）
+        self.runtime.trace_add("write", self._rt_remember)
         ttk.Label(cfg, text=(f"偵測到 {len(RUNTIMES)} 套 llama-server，切換後按「▶ 啟動」生效"
                              if len(RUNTIMES) > 1 else
                              "本資料夾的 llama-server（丟新的一份到子資料夾會自動列出）"),
                   foreground="#666").grid(row=8, column=2, sticky="w", padx=6)
         Tip(self.cb_runtime, "要用哪一套 llama-server 執行檔。\n"
                              "自動掃描本資料夾下所有含 llama-server.exe 的子資料夾。\n"
-                             "不同 build 支援的模型架構不同，舊版執行檔可能載不動較新的模型架構。")
+                             "不同 build 支援的模型架構不同（例：spark2_5 只有官方 runtime 能載）。")
 
-        # 「更多設定」折疊開關（狀態寫進 ui-settings.json，下次開還原）
-        self.more = tk.BooleanVar(value=False)
-        self.btn_more = ttk.Button(cfg, text="▸ 更多設定（KV 型別／思考預算／開關）",
-                                   command=self._toggle_more)
-        self.btn_more.grid(row=9, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 6))
-        Tip(self.btn_more, "收起不常改的設定，下面的日誌就不會被擠小。\n展開／收合狀態會記住。")
+        # 「更多設定」開關已移到整區最上方（見上方 _bar）
         self._apply_more()
-
-        # --- 進階取樣參數變數（視窗由「⚙ 進階取樣設定」按鈕開啟）---
-        self.adv = {}
-        for _r in ADV_CORE:
-            self.adv[_r[1]] = tk.StringVar(value=_r[4])
-        for _r in ADV_OPT:
-            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出該參數
-        for _r in ADV_SPEC:
-            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
 
         # 所有數值欄位都吃全形輸入（中文 IME 打 "." 會送成 "。"）
         for _v in (self.ctx, self.ngl, self.ngld, self.rbud, self.port, *self.adv.values()):
@@ -975,6 +1170,14 @@ class App:
         for _v in self._persist_vars():
             _v.trace_add("write", self._schedule_save)
 
+        # 模板（presets.json）：載入既有模板與模型綁定
+        self._presets = load_presets()
+        self._tpl_busy = False
+        self._tpl_note = ""
+        self._rt_busy = False
+        # 切換主模型 → 自動套用綁定/預設模板
+        self.model.trace_add("write", self._tpl_on_model_change)
+
         # --- 控制區 ---
         ctl = ttk.Frame(inner)
         ctl.pack(fill="x", padx=10)
@@ -984,13 +1187,17 @@ class App:
         self.btn_stop.pack(side="left", padx=4)
         self.btn_adv = ttk.Button(ctl, text="⚙ 進階取樣設定", command=self.open_advanced)
         self.btn_adv.pack(side="left", padx=4)
-        self.btn_web = ttk.Button(ctl, text="🌐 開網頁", command=self.open_web)
+        self.btn_web = ttk.Button(ctl, text="🌐 開網頁（輕量）", command=self.open_web)
         self.btn_web.pack(side="left", padx=4)
-        Tip(self.btn_web, "用瀏覽器開啟 llama-server 內建的網頁介面。\n"
-                          "網址＝http://127.0.0.1:<上面「埠」欄位的值>/，改埠就跟著變。")
+        Tip(self.btn_web, "用「獨立小視窗」開啟 llama-server 內建的網頁介面。\n"
+                          "做法＝Chromium 的 --app 模式＋獨立 profile＋關擴充功能，\n"
+                          "不帶分頁、網址列、擴充功能（實測比日常 Chrome 省約 2 GB）。\n"
+                          "用完直接把那個視窗關掉就結束，不會留在背景。\n"
+                          "找不到 Chrome/Edge 時自動退回系統預設瀏覽器。")
         Tip(self.btn_start, "啟動 llama-server（會先自動檢查埠與殘留程序）")
         Tip(self.btn_stop, "終止本 UI 啟動的 server 並釋放埠")
-        Tip(self.btn_adv, "開啟參數視窗（temp / top-p / DRY / XTC…與投機解碼，共 25 項）")
+        Tip(self.btn_adv, "開啟參數視窗（temp / top-p / DRY / XTC…與投機解碼共 25 項）。\n"
+                          "MoE 的 -ncmoe / -ncffn 不在這個視窗，放在上方「更多設定」裡。")
         self.btn_dot = ttk.Button(ctl, text="．", width=3, command=self._insert_dot)
         self.btn_dot.pack(side="left", padx=4)
         Tip(self.btn_dot, "把「.」補進你上一個點過的欄位（含進階設定視窗裡的欄位）。\n"
@@ -1003,6 +1210,53 @@ class App:
         self.lbl = ttk.Label(ctl, text="狀態：未執行", foreground="#b00")
         self.lbl.pack(side="left", padx=16)
 
+        # --- 模板列（參數組合＋模型自動綁定）---
+        tplf = ttk.LabelFrame(inner, text="參數模板（每個模型一套參數，選到模型自動套用）")
+        tplf.pack(fill="x", padx=10, pady=(6, 0))
+        _tr = ttk.Frame(tplf)
+        _tr.pack(fill="x", padx=6, pady=4)
+        ttk.Label(_tr, text="模板").pack(side="left", padx=(2, 4))
+        self.tpl = tk.StringVar(value="（不使用模板）")
+        self.cb_tpl = ttk.Combobox(_tr, textvariable=self.tpl, width=26, state="readonly",
+                                   values=["（不使用模板）"])
+        self.cb_tpl.pack(side="left", padx=4)
+        self.cb_tpl.bind("<<ComboboxSelected>>", self._tpl_on_pick)
+        Tip(self.cb_tpl, "選一個模板 → 立刻把它的參數套到下面的啟動設定與進階取樣設定。\n"
+                         "模板只存「怎麼跑」（ctx / ngl / KV 型別 / 取樣 / 投機 / 載入模式…），\n"
+                         "不含埠、主模型、草稿模型本身。")
+        _b = ttk.Button(_tr, text="💾 另存模板", command=self._tpl_save_as)
+        _b.pack(side="left", padx=3)
+        Tip(_b, "把「目前畫面上的所有參數」存成一個新的具名模板。")
+        _b2 = ttk.Button(_tr, text="🔗 綁定此模型", command=self._tpl_bind)
+        _b2.pack(side="left", padx=3)
+        Tip(_b2, "把「目前選的主模型」綁到「目前選的模板」。\n"
+                 "以後只要選到這個模型，就會自動套用該模板（仍可手動換別的）。")
+        _b3 = ttk.Button(_tr, text="✂ 解除綁定", command=self._tpl_unbind)
+        _b3.pack(side="left", padx=3)
+        Tip(_b3, "解除目前主模型的模板綁定（之後選到它不會再自動套用）。")
+        _b4 = ttk.Button(_tr, text="🗑 刪除模板", command=self._tpl_delete)
+        _b4.pack(side="left", padx=3)
+        Tip(_b4, "刪除目前選的模板（有綁定它的模型會一併解除）。")
+        _b5 = ttk.Button(_tr, text="⭐ 設為預設模板", command=self._tpl_set_default)
+        _b5.pack(side="left", padx=3)
+        Tip(_b5, "把目前選的模板設為「預設模板」。\n"
+                 "之後選到『沒有個別綁定』的模型時，會自動套用這個模板。\n"
+                 "（個別綁定優先於預設模板）")
+        self.lbl_tpl = ttk.Label(_tr, text="", foreground="#666")
+        self.lbl_tpl.pack(side="left", padx=10)
+        self._tpl_refresh_ui()
+
+        # 「每次開都走這模板」：開機載入的模型也要套用。
+        # （trace 是在 _apply_settings 之後才註冊，所以開機不會自動觸發 → 這裡主動跑一次）
+        # 用 _loading 保護，避免套用過程連帶觸發自動存回。
+        _was_loading = self._loading
+        self._loading = True
+        try:
+            self._tpl_on_model_change(force=True)
+        finally:
+            self._loading = _was_loading
+        self._tpl_refresh_ui()
+
         # --- 日誌（固定在下半部；拉中間分隔線可調大小，不會被上面的設定擠掉）---
         _bot = ttk.Frame(pane)
         pane.add(_bot, weight=1)
@@ -1012,6 +1266,10 @@ class App:
         self.log.pack(fill="both", expand=True)
         # 設定區滾輪：綁到設定區每個子控件（Tk 滾輪事件不會冒泡到 Canvas）
         self._bind_wheel(inner)
+        # A：某些位置（子控件縫隙／Canvas 空白／捲軸）根本收不到事件 → 使用者會覺得
+        # 「怎麼滾都沒反應」。這裡在視窗層級統一攔截，指標在日誌或別的子視窗時才放行。
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        self.root.bind_all("<MouseWheel>", self._on_wheel_any, add="+")
         self._sync_scroll()
 
         self.external_pid = None  # 非本 UI 啟動、但被接管的 server PID
@@ -1049,14 +1307,16 @@ class App:
             pass
 
     def _toggle_more(self):
+        # 只有「使用者按下按鈕」才把該區捲進畫面；載入設定／程式化還原時不要捲，
+        # 否則一開 UI 就被推下去，看不到最上面的「主模型」（實測 yview 會變 0.09）。
         self.more.set(not self.more.get())
-        self._apply_more()
+        self._apply_more(scroll_to=True)
 
-    def _apply_more(self):
-        """依 self.more 展開／收起「更多設定」。"""
+    def _apply_more(self, scroll_to=False):
+        """依 self.more 展開／收起「更多設定」。scroll_to=True 才把該區捲進畫面。"""
         _open = bool(self.more.get())
-        self.btn_more.config(text="▾ 更多設定（KV 型別／思考預算／開關）" if _open
-                             else "▸ 更多設定（KV 型別／思考預算／開關）")
+        self.btn_more.config(text="▾ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數）" if _open
+                             else "▸ 更多設定（KV 型別／思考預算／MoE 放 CPU 層數）")
         try:
             if _open:
                 self.advf.grid()
@@ -1064,7 +1324,31 @@ class App:
                 self.advf.grid_remove()
         except Exception:
             pass
+        # C：使用者展開時把「更多設定」整區捲進畫面（視窗很矮時，這區原本會落在折線下）
+        if _open and scroll_to:
+            self.root.update_idletasks()
+            self._scroll_to_advf()
         self._sync_scroll()
+
+    def _scroll_to_advf(self):
+        """把「更多設定」區塊頂端捲到設定區可視範圍內（置於最上方）。"""
+        try:
+            _f = getattr(self, "advf", None)
+            if _f is None or not _f.winfo_ismapped():
+                return
+            _c = self._canvas
+            _bbox = _c.bbox("all")
+            if not _bbox or _bbox[3] <= 0:
+                return
+            _tot = float(_bbox[3])
+            if _tot <= 0:
+                return
+            # advf 是 cfg 的子控件，winfo_y() 只給相對父層的座標；
+            # 用 root 座標相減換算成「相對 inner frame」才對。
+            _top = _f.winfo_rooty() - self._inner.winfo_rooty()
+            _c.yview_moveto(max(0.0, min(1.0, (_top - 4) / _tot)))
+        except Exception:
+            pass
 
     def _bind_wheel(self, w):
         """把滾輪綁到設定區所有子控件（Tk 的滾輪不會冒泡，不綁就滾不動）。"""
@@ -1074,6 +1358,32 @@ class App:
                 self._bind_wheel(_c)
         except Exception:
             pass
+
+    def _on_wheel_any(self, e):
+        """視窗層級攔截：只要滾輪不是落在日誌／彈出視窗上，就讓設定區捲動。
+        子控件自己已綁 _on_wheel 的情況（回傳 break）不會走到這裡，因此不會滾兩倍。"""
+        try:
+            _w = e.widget
+            _tl = _w.winfo_toplevel()
+            if _tl is not self.root:
+                return None                 # 在彈出的子視窗裡 → 不干預
+            if self._is_in_log(_w):
+                return None                 # 日誌自己捲，不去搶
+            return self._on_wheel(e)
+        except Exception:
+            return None
+
+    def _is_in_log(self, w):
+        """判斷某控件是不是「日誌」區的子控件（沿父鏈往上找）。"""
+        try:
+            _log = getattr(self, "log", None)
+            while w is not None:
+                if w is _log:
+                    return True
+                w = getattr(w, "master", None)
+        except Exception:
+            pass
+        return False
 
     def _on_wheel(self, e):
         try:
@@ -1320,8 +1630,27 @@ class App:
             _v = self.adv[_r[1]].get().strip()
             if _v:
                 cmd += [_r[0], _v]
-        # 思考模式：-rea on/off（對應 chat template 的 enable_thinking；不預設 on 會走 auto）
-        cmd += ["-rea", "on" if self.think.get() else "off"]
+        # MoE 權重放置（-ncmoe / -ncffn）：留空 = 不送，全部照 -ngl 上 GPU
+        for _r in ADV_MOE:
+            _v = self.adv[_r[1]].get().strip()
+            if _v:
+                cmd += [_r[0], _v]
+        # 模型載入模式（-lm / -lzm）：留空 = 不送，用 llama.cpp 內建預設
+        for _r in ADV_LOAD:
+            _v = self.adv[_r[1]].get().strip()
+            if _v:
+                cmd += [_r[0], _v]
+        # LoRA 適配檔（--lora）：留空 = 不送
+        for _r in ADV_LORA:
+            _v = self.adv[_r[1]].get().strip()
+            if _v:
+                cmd += [_r[0], _v]
+        # 思考模式：-rea auto/on/off（本 build 預設 auto＝依 chat template 偵測）
+        cmd += ["-rea", self.think.get() or "auto"]
+        # 思考強度：--reasoning-effort（留空 = 不送，用官方預設 default）
+        _eff = self.adv["rea_effort"].get().strip()
+        if _eff:
+            cmd += ["--reasoning-effort", _eff]
         # 思考預算：-1 不限 / 0 立即結束 / N>0 上限（留空 = 用 llama.cpp 預設）
         rbud = self.rbud.get().strip()
         if rbud:
@@ -1341,7 +1670,7 @@ class App:
             self._forced_fa = True
         if fa_on:
             cmd += ["-fa", "on"]
-        # ctx > 32768 在 8GB VRAM 上放不下 KV，強制把 KV 放到系統 RAM
+        # ctx > 32768 在小 VRAM 顯卡上放不下 KV，強制把 KV 放到系統 RAM
         try:
             big = int(self.ctx.get()) > 32768
         except Exception:
@@ -1351,11 +1680,27 @@ class App:
 
         mode = self.mode.get()
         self._forced_normal = ""
+        self._spec_note = ""
         if mode == "dspark":
             mp = self.model_path()
             sel = self._drafter_map.get(self.drafter.get(), "")
-            if sel == "-":                       # 使用者指定「不使用草稿模型」
-                self._forced_normal = "[注意] 已指定「不使用草稿模型」，以 Normal 模式啟動\n"
+            if sel == "-":                      # 明確不使用外掛 DF
+                # 模式才是主開關：投機模式 + 不用 DF ＝ 使用「主模型內建 MTP」
+                # （實測：只送 --spec-type draft-mtp、不送 -md，llama-server 會自己
+                #  對照主模型建立 MTP 上下文；沒有內建 MTP 的模型則會載入失敗。）
+                if gguf_mtp_layers(mp) > 0:
+                    cmd += ["--spec-type", "draft-mtp"]
+                    for _r in ADV_SPEC:
+                        _v = self.adv[_r[1]].get().strip()
+                        if _v:
+                            cmd += [_r[0], _v]
+                    self._spec_note = (
+                        f"[投機] 不使用外掛 DF：改用主模型內建 MTP"
+                        f"（nextn_predict_layers={gguf_mtp_layers(mp)}）\n")
+                else:
+                    self._spec_note = (
+                        "[注意] 投機模式但未選 DF，且主模型沒有內建 MTP（nextn_predict_layers）"
+                        "→ 本次以純主模型解碼啟動\n")
             else:
                 if sel:                          # 手動指定的 DF
                     dr, spec = sel, spec_for_drafter(sel, self._model_extra(sel))
@@ -1372,16 +1717,58 @@ class App:
                     ngld = self.ngld.get().strip()
                     if ngld:
                         cmd += ["-ngld", ngld]
+                    self._spec_note = f"[投機] DF：{os.path.basename(dr)}（--spec-type {spec}）\n"
                 elif dr:
                     raise FileNotFoundError(f"找不到指定的草稿模型檔：{dr}")
                 else:
-                    self._forced_normal = (
-                        f"[注意] {os.path.basename(mp)} 找不到可搭配的草稿模型，"
-                        f"已自動改用 Normal 模式啟動\n")
+                    self._spec_note = (
+                        f"[注意] {os.path.basename(mp)} 找不到可搭配的草稿模型；"
+                        f"若這顆模型內建 MTP，請把 DF 選「不使用外掛 DF」\n")
+        # 自訂指令：原樣附加到最後（進階視窗「自訂指令」分頁）
+        # 用 shlex 解析成 argv，支援引號與空白路徑；解析失敗則整串當一個參數送出
+        _extra = self.adv.get("extra_args")
+        if _extra is not None:
+            _ev = _extra.get().strip()
+            if _ev:
+                try:
+                    import shlex as _shlex
+                    _parts = _shlex.split(_ev, posix=False)
+                    # posix=False 會保留引號，去掉成對的引號
+                    _parts = [q[1:-1] if len(q) >= 2 and q[0] == q[-1] and q[0] in ("\"", "'")
+                              else q for q in _parts]
+                    cmd += [x for x in _parts if x]
+                except Exception:
+                    cmd += [_ev]
         return cmd
 
+    def _light_profile_dir(self):
+        """輕量視窗專用的獨立 Chrome profile（不與日常分頁／擴充功能共用）。"""
+        d = os.path.join(BASE, "tools", "_webview_profile")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            return ""
+        return d
+
+    def _find_browser(self):
+        """找可用的 Chromium 系執行檔（Chrome 優先，其次 Edge）。回傳 exe 路徑或 ''。"""
+        cands = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        for c in cands:
+            if os.path.exists(c):
+                return c
+        return ""
+
     def open_web(self):
-        """用預設瀏覽器開啟 llama-server 的網頁介面（網址跟隨「埠」欄位變化）。"""
+        """開 llama-server 網頁介面。
+        【輕量模式】用 Chromium 的 --app 開「單一視窗」＋獨立 profile＋關擴充功能。
+        實測（同一頁、1100x780）：日常 Chrome 多分頁 2606 MB → 這樣開 585 MB。
+        （WebView2 反而更重：660 MB，故不採用。）
+        找不到 Chromium 時退回系統預設瀏覽器。"""
         raw = self.port.get().strip()
         try:
             port = int(raw)
@@ -1394,7 +1781,25 @@ class App:
                     "server 似乎沒在跑",
                     f"埠 {port} 沒有回應（server 可能還沒啟動）。\n\n仍要開啟 {url} 嗎？"):
                 return
-        self._log(f"[網頁] 開啟 {url}\n")
+
+        exe = self._find_browser()
+        if exe:
+            prof = self._light_profile_dir()
+            cmd = [exe, f"--app={url}"]
+            if prof:
+                cmd.append("--user-data-dir=" + prof)
+            cmd += ["--no-first-run", "--no-default-browser-check",
+                    "--disable-extensions", "--disable-background-networking",
+                    "--window-size=1100,780"]
+            self._log(f"[網頁] 輕量視窗開啟（獨立 profile、無擴充功能）：{url}\n"
+                      f"        {os.path.basename(exe)}\n")
+            try:
+                subprocess.Popen(cmd)
+                return
+            except Exception as e:
+                self._log(f"[網頁] 輕量視窗啟動失敗（{e}），改用預設瀏覽器\n")
+
+        self._log(f"[網頁] 開啟 {url}（系統預設瀏覽器）\n")
         try:
             webbrowser.open(url)
         except Exception as e:
@@ -1433,8 +1838,8 @@ class App:
         self._log("$ " + " ".join(cmd) + "\n")
         if getattr(self, "_forced_fa", False):
             self._log("[注意] V cache 量化需要 Flash-Attn，已自動補上 -fa on\n")
-        if getattr(self, "_forced_normal", ""):
-            self._log(self._forced_normal)
+        if getattr(self, "_spec_note", ""):
+            self._log(self._spec_note)
         try:
             proc = subprocess.Popen(cmd, cwd=self.server_dir(),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1494,11 +1899,43 @@ class App:
             model = os.path.basename(info.get("model_path", "") or "")[:40]
             nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
             self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
+            self._apply_lora_scale(p)
         elif alive:
             self.lbl.config(text="狀態：啟動中（載入模型）…", foreground="#b80")
         else:
             self.lbl.config(text="狀態：未執行", foreground="#b00")
         self.root.after(2000, self._poll)
+
+    def _apply_lora_scale(self, port):
+        """server 就緒後，把 LoRA 強度以 API 套用（改值會即時重套，不必重啟）。
+        用 POST /lora-adapters，繞開 --lora-scaled 在 Windows 的 FNAME:SCALE 冒號衝突。"""
+        try:
+            lora = self.adv["lora"].get().strip()
+            if not lora:
+                return
+            _raw = self.adv["lora_scale"].get().strip()
+            try:
+                scale = float(_raw) if _raw else 1.0
+            except ValueError:
+                return                      # 填了非數字 → 不套用（避免洗版）
+            want = (lora, scale)
+            if getattr(self, "_lora_applied", None) == want:
+                return                      # 已套用過這個組合
+            now = time.time()
+            if now - getattr(self, "_lora_try_ts", 0) < 10:
+                return                      # 失敗後節流，10 秒才重試一次
+            self._lora_try_ts = now
+            r = http_post("/lora-adapters", [{"id": 0, "scale": scale}],
+                          timeout=5, port=port)
+            if isinstance(r, dict) and r.get("_err"):
+                self._log(f"[LoRA] 套用強度 {scale} 失敗：{r['_err']}\n")
+                return
+            cur = http_get("/lora-adapters", timeout=3, port=port)
+            got = cur[0].get("scale") if isinstance(cur, list) and cur else "?"
+            self._lora_applied = want
+            self._log(f"[LoRA] 已套用強度 scale={got}（{os.path.basename(lora)}）\n")
+        except Exception as e:
+            self._log(f"[LoRA] 套用強度例外：{e}\n")
 
     def _insert_dot(self):
         """小數點急救鈕：把「.」補進最後一個用過的數字欄位（含進階設定視窗裡的欄位）。
@@ -1553,7 +1990,7 @@ class App:
             self._log("[按鍵偵錯] 已開啟：請用滑鼠點一下要測的欄位，再按那個按不出來的鍵"
                       "（例如數字鍵盤的 .）\n"
                       "            每顆鍵都會記一行 keysym / keycode / char，"
-                      "按完把這幾行貼給我就能對症下藥\n")
+                      "按完把這幾行貼到 issue／討論串就能對症下藥\n")
             self._enable_keydbg(self.root)
         else:
             self._log("[按鍵偵錯] 已關閉\n")
@@ -1612,15 +2049,293 @@ class App:
              "adv": {k: v.get() for k, v in self.adv.items()}}
         return d
 
+    # ---------- 模板（presets.json）：參數組合 + 模型綁定 ----------
+    # 模板「不含」埠、主模型、草稿模型——這三項是「選哪個模型」的一部分，
+    # 不是「這模型要怎麼跑」的參數，所以不進模板。
+    _TPL_KEYS = ("mode", "ctx", "ngl", "ngld", "ctk", "ctv", "rbud",
+                 "fa", "nkvo", "think", "jinja", "runtime")
+
+    def _tpl_snapshot(self):
+        """把「目前 UI 上的啟動設定＋進階參數」抓成一份模板內容。"""
+        snap = {k: self._collect_settings()[k] for k in self._TPL_KEYS}
+        snap["adv"] = {k: v.get() for k, v in self.adv.items()}
+        return snap
+
+    def _tpl_apply(self, tpl):
+        """把模板內容套到 UI（只套模板有的欄位，缺的不動）。"""
+        for var, key in ((self.mode, "mode"), (self.ctx, "ctx"), (self.ngl, "ngl"),
+                         (self.ngld, "ngld"), (self.ctk, "ctk"), (self.ctv, "ctv"),
+                         (self.rbud, "rbud")):
+            if isinstance(tpl.get(key), str):
+                var.set(tpl[key])
+        for var, key in ((self.fa, "fa"), (self.nkvo, "nkvo"), (self.jinja, "jinja")):
+            if isinstance(tpl.get(key), bool):
+                var.set(tpl[key])
+        # think 是字串（auto/on/off）；舊模板可能是 bool → 轉換相容
+        _th = tpl.get("think")
+        if isinstance(_th, bool):
+            self.think.set("on" if _th else "off")
+        elif isinstance(_th, str) and _th in ("auto", "on", "off"):
+            self.think.set(_th)
+        rt = tpl.get("runtime")
+        if isinstance(rt, str) and rt in [n for n, _d in RUNTIMES]:
+            self.runtime.set(rt)
+        adv = tpl.get("adv")
+        if isinstance(adv, dict):
+            for k, var in self.adv.items():
+                if isinstance(adv.get(k), str):
+                    var.set(adv[k])
+
+    _TPL_NONE = "（不使用模板）"
+    _TPL_DEFAULT = "（預設模板）"
+
+    def _tpl_current_name(self):
+        """目前下拉選的模板名；選到哨兵值（不使用/預設）時回傳空字串。"""
+        if not hasattr(self, "tpl"):
+            return ""
+        v = self.tpl.get()
+        return "" if v in ("", self._TPL_NONE, self._TPL_DEFAULT) else v
+
+    def _tpl_default_name(self):
+        """目前設定的『預設模板』（沒綁定的模型會自動用它）；沒有則回傳空字串。"""
+        d = self._presets.get("default", "")
+        return d if isinstance(d, str) and d in self._presets["templates"] else ""
+
+    def _tpl_store_current(self, name=None, quiet=False):
+        """把目前設定存回（指定或目前的）模板。"""
+        name = name or self._tpl_current_name()
+        if not name or name not in self._presets["templates"]:
+            return False
+        self._presets["templates"][name] = self._tpl_snapshot()
+        ok = save_presets(self._presets)
+        if not quiet:
+            self._log(f"[模板] {'已存回' if ok else '⚠ 存檔失敗：'}「{name}」\n")
+        return ok
+
+    def _tpl_refresh_ui(self):
+        """把模板清單同步到下拉選單（含預設模板標記）。"""
+        if not hasattr(self, "cb_tpl"):
+            return
+        names = [self._TPL_NONE] + sorted(self._presets["templates"])
+        self.cb_tpl.config(values=names)
+        cur = self._tpl_current_name()
+        if cur and cur in self._presets["templates"]:
+            self.tpl.set(cur)
+        else:
+            self.tpl.set(self._TPL_NONE)
+        dft = self._tpl_default_name()
+        self._tpl_status()
+
+    def _tpl_status(self, note=""):
+        """模板區右側狀態列的唯一寫入點（避免多處覆蓋彼此的文字）。"""
+        if not hasattr(self, "lbl_tpl"):
+            return
+        dft = self._tpl_default_name()
+        base = (f"預設模板：{dft}（未綁定的模型會自動套用）" if dft else "尚未設定預設模板")
+        self.lbl_tpl.config(text=base + (f"　｜　{note}" if note else ""))
+
+    def _tpl_on_pick(self, *_a):
+        """使用者從下拉手動選模板 → 立即套用。"""
+        if getattr(self, "_loading", False) or getattr(self, "_tpl_busy", False):
+            return
+        name = self.tpl.get()
+        if name in ("", self._TPL_NONE):
+            self._tpl_note = ""
+            return
+        tpl = self._presets["templates"].get(name)
+        if not isinstance(tpl, dict):
+            return
+        self._tpl_busy = True
+        self._tpl_apply(tpl)
+        self._tpl_busy = False
+        self._tpl_note = f"[模板] 已套用模板「{name}」\n"
+        self._log(f"[模板] 已套用「{name}」（{len([k for k in (tpl.get('adv') or {}) if (tpl.get('adv') or {}).get(k)])} 項進階參數）\n")
+
+    # ---------- 模型 ↔ 執行檔 記憶（presets.json 的 "runtime_of"）----------
+    # 每顆模型各自記住「上次用哪一套 llama-server」：切模型時自動還原。
+    # 優先序：模板的 runtime（有綁模板）> 這張記憶表 > 不動。
+    def _rt_key(self, path):
+        return os.path.normcase(path) if path else ""
+
+    def _rt_remember(self, *_a):
+        """使用者手動換執行檔 → 記到目前模型名下（下次選到它自動還原）。"""
+        if getattr(self, "_loading", False) or getattr(self, "_tpl_busy", False) \
+                or getattr(self, "_rt_busy", False):
+            return
+        mp = self.model_path()
+        if not mp:
+            return
+        rt = self.runtime.get()
+        if not rt:
+            return
+        table = self._presets.setdefault("runtime_of", {})
+        if table.get(self._rt_key(mp)) == rt:
+            return                      # 沒變就不寫檔
+        table[self._rt_key(mp)] = rt
+        self._presets["runtime_of"] = table
+        if save_presets(self._presets):
+            self._log(f"[執行檔] 已記住：{os.path.basename(mp)} → {rt}（下次選到它自動還原）\n")
+
+    def _rt_restore(self, path):
+        """把該模型記住的執行檔套回來。回傳是否有套用。"""
+        rt = self._presets.get("runtime_of", {}).get(self._rt_key(path))
+        if rt and rt in [n for n, _d in RUNTIMES] and self.runtime.get() != rt:
+            self._rt_busy = True
+            try:
+                self.runtime.set(rt)
+            finally:
+                self._rt_busy = False
+            return True
+        return False
+
+    def _tpl_on_model_change(self, *_a, force=False):
+        """切換主模型 → 套用綁定模板；沒綁定則套用「預設模板」；都沒有則不動。
+
+        force=True 用於「開機載入」：此時 trace 尚未生效，但仍要套用模板。
+        開機時（force）若沒綁模板不做任何事——保留使用者上次的執行檔選擇，
+        不要被「回到預設」的保底邏輯覆蓋掉。
+        """
+        if getattr(self, "_loading", False) and not force:
+            return
+        mp = self.model_path()
+        if not mp:
+            return
+        name = self._presets["bind"].get(os.path.normcase(mp))
+        if not name:
+            name = self._presets["bind"].get(os.path.basename(mp))
+        src = "此模型綁定"
+        if not (name and name in self._presets["templates"]):
+            name = self._tpl_default_name()
+            src = "預設模板"
+        if name and name in self._presets["templates"]:
+            self._tpl_busy = True
+            self.tpl.set(name)
+            self._tpl_apply(self._presets["templates"][name])
+            self._tpl_busy = False
+            self._tpl_note = f"[模板] 已自動套用「{name}」（{src}）\n"
+            self._log(f"[模板] 切換模型 → 自動套用{src}「{name}」\n")
+        else:
+            # 沒綁模板 → 至少把「這顆模型上次用的執行檔」還原回來，
+            # 否則會沿用上一顆模型的執行檔（例如切回 A 模型卻還在用 B 模型的 runtime）。
+            self._tpl_busy = True
+            self.tpl.set(self._TPL_NONE)
+            self._tpl_busy = False
+            self._tpl_note = ""
+            if force and not self._tpl_default_name():
+                return          # 開機且無綁模板/預設模板 → 保留上次的執行檔
+            if not self._rt_restore(mp):
+                # 這顆模型從沒被記住過 → 回到預設（清單第一套），
+                # 不要沿用上一顆模型的執行檔。
+                # 開機（force）時不套：保留使用者上次的選擇。
+                _dflt = RUNTIMES[0][0] if RUNTIMES else ""
+                if (not force) and _dflt and self.runtime.get() != _dflt:
+                    self._rt_busy = True
+                    try:
+                        self.runtime.set(_dflt)
+                    finally:
+                        self._rt_busy = False
+                    self._log(f"[執行檔] 切換模型 → 這顆沒記錄，回到預設執行檔：{_dflt}\n")
+
+    def _tpl_save_as(self):
+        """把目前設定另存成新模板。"""
+        from tkinter import simpledialog
+        name = simpledialog.askstring("另存模板", "模板名稱",
+                                      parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in self._presets["templates"] and not messagebox.askyesno(
+                "覆蓋模板", f"模板「{name}」已存在，要覆蓋嗎？"):
+            return
+        self._presets["templates"][name] = self._tpl_snapshot()
+        if save_presets(self._presets):
+            self.tpl.set(name)
+            self._tpl_refresh_ui()
+            self.tpl.set(name)
+            self._log(f"[模板] 已另存模板「{name}」\n")
+        else:
+            messagebox.showerror("儲存失敗", "無法寫入 presets.json")
+
+    def _tpl_bind(self):
+        """把「目前選的主模型」綁到「目前選的模板」。"""
+        mp = self.model_path()
+        if not mp:
+            messagebox.showwarning("沒有模型", "請先在主模型欄位選一個模型。")
+            return
+        name = self._tpl_current_name()
+        if not name:
+            messagebox.showwarning("沒有模板", "請先在上面的下拉選一個模板（或用「另存模板」建立）。")
+            return
+        self._presets["bind"][os.path.normcase(mp)] = name
+        if save_presets(self._presets):
+            self._log(f"[模板] 已綁定：{os.path.basename(mp)} → 「{name}」（以後選到它會自動套用）\n")
+            if self._sync_model_fn:
+                self._sync_model_fn()
+        else:
+            messagebox.showerror("儲存失敗", "無法寫入 presets.json")
+
+    def _tpl_unbind(self):
+        """解除目前主模型的模板綁定。"""
+        mp = self.model_path()
+        if not mp:
+            return
+        hit = [k for k in self._presets["bind"] if k == os.path.normcase(mp)
+               or k == os.path.basename(mp)]
+        if not hit:
+            messagebox.showinfo("沒有綁定", f"{os.path.basename(mp)} 目前沒有綁定任何模板。")
+            return
+        for k in hit:
+            self._presets["bind"].pop(k, None)
+        if save_presets(self._presets):
+            self._log(f"[模板] 已解除綁定：{os.path.basename(mp)}\n")
+            self._tpl_note = ""
+            if self._sync_model_fn:
+                self._sync_model_fn()
+
+    def _tpl_set_default(self):
+        """把目前選的模板設為「預設模板」（未綁定的模型會自動套用）。"""
+        name = self._tpl_current_name()
+        if not name:
+            messagebox.showwarning("沒有模板", "請先在上面的下拉選一個模板。")
+            return
+        self._presets["default"] = name
+        if save_presets(self._presets):
+            self._log(f"[模板] 已把「{name}」設為預設模板（未綁定的模型會自動套用）\n")
+            self._tpl_refresh_ui()
+        else:
+            messagebox.showerror("儲存失敗", "無法寫入 presets.json")
+
+    def _tpl_delete(self):
+        """刪除目前選的模板。"""
+        name = self._tpl_current_name()
+        if not name:
+            return
+        if not messagebox.askyesno("刪除模板", f"要刪除模板「{name}」嗎？\n"
+                                   "（有綁定它的模型會自動改回不套用）"):
+            return
+        self._presets["templates"].pop(name, None)
+        for k in [k for k, v in self._presets["bind"].items() if v == name]:
+            self._presets["bind"].pop(k, None)
+        if save_presets(self._presets):
+            self._log(f"[模板] 已刪除模板「{name}」\n")
+            self._tpl_refresh_ui()
+
     def _apply_settings(self, d):
         for var, key in ((self.mode, "mode"), (self.ctx, "ctx"), (self.ngl, "ngl"),
                          (self.ngld, "ngld"), (self.ctk, "ctk"), (self.ctv, "ctv"),
                          (self.rbud, "rbud"), (self.port, "port")):
             if isinstance(d.get(key), str):
                 var.set(d[key])
-        for var, key in ((self.fa, "fa"), (self.nkvo, "nkvo"), (self.think, "think"), (self.jinja, "jinja")):
+        for var, key in ((self.fa, "fa"), (self.nkvo, "nkvo"), (self.jinja, "jinja")):
             if isinstance(d.get(key), bool):
                 var.set(d[key])
+        # think：新格式是字串（auto/on/off）。
+        # 舊設定檔存的是 bool（舊語意：只有 on/off，沒有 auto 概念）→ 一律忽略，回到新預設 auto
+        _th = d.get("think")
+        if isinstance(_th, str) and _th in ("auto", "on", "off"):
+            self.think.set(_th)
         # 執行檔：只有「現在真的存在」的 runtime 才套用（換電腦／資料夾沒了也不會卡住）
         rt = d.get("runtime")
         if isinstance(rt, str) and rt in [n for n, _dir in RUNTIMES]:
@@ -1678,6 +2393,10 @@ class App:
         try:
             cur = self._collect_settings()
             ok = save_settings(cur)
+            # 有選模板時 → 把目前參數「自動存回」該模板（與現有的自動記憶行為一致）
+            if self._tpl_current_name() and not getattr(self, "_tpl_busy", False):
+                if self._tpl_store_current(quiet=True):
+                    self._tpl_status(f"已自動存回「{self._tpl_current_name()}」")
             prev = getattr(self, "_last_saved", None)
             self._last_saved = cur
             names = {"model_path": "主模型", "drafter_path": "草稿模型(DF)", "runtime": "執行檔"}
@@ -1814,17 +2533,35 @@ class App:
         w = tk.Toplevel(self.root)
         self._adv_win = w
         w.title("進階取樣設定")
-        w.geometry("1150x600")
+        # 實測內容只需約 897x302；原本寫死 1150x600，超過一半是空白。
+        # 改成貼合需求，並置中於主視窗（小螢幕也不會開到畫面外）。
+        _ww, _wh = 920, 380
+        w.minsize(760, 300)
+        try:
+            self.root.update_idletasks()
+            _x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - _ww) // 2)
+            _y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - _wh) // 2)
+            _sw, _sh = w.winfo_screenwidth(), w.winfo_screenheight()
+            _x = min(max(0, _x), max(0, _sw - _ww))
+            _y = min(max(0, _y), max(0, _sh - _wh))
+            w.geometry(f"{_ww}x{_wh}+{_x}+{_y}")
+        except Exception:
+            w.geometry(f"{_ww}x{_wh}")
+        w.bind("<Escape>", lambda e: w.destroy())   # ESC 直接關閉
         ttk.Label(w, text="留空 = 不送出該參數（改用 llama.cpp 內建預設）｜改完按主視窗「▶ 啟動」生效",
                   foreground="#666").pack(anchor="w", padx=10, pady=(8, 2))
 
         nb = ttk.Notebook(w)
-        nb.pack(fill="both", expand=True, padx=10, pady=6)
+        # 不用 expand：讓高度貼合內容，否則最矮的分頁（基本 131px）底下會出現大片空白
+        nb.pack(fill="x", padx=10, pady=6)
 
         def fill(tab, rows, note=None):
+            # 欄位總寬 = 標籤 + Entry + 說明；視窗 920 → 分頁可用約 880。
+            # 舊的 wraplength 700/720 會讓「說明欄」被擠出右緣而截斷（實測 llama.cpp 被切成 llama.cp）。
+            tab.columnconfigure(2, weight=1)
             r0 = 0
             if note:
-                ttk.Label(tab, text=note, foreground="#666", wraplength=720, justify="left").grid(
+                ttk.Label(tab, text=note, foreground="#666", wraplength=560, justify="left").grid(
                     row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 4))
                 r0 = 1
             for i, r in enumerate(rows):
@@ -1833,7 +2570,7 @@ class App:
                 ttk.Entry(tab, textvariable=self.adv[_key], width=16).grid(
                     row=r0 + i, column=1, sticky="w", padx=6)
                 ttk.Label(tab, text=f"{_flag}    {_hint}", foreground="#666",
-                          wraplength=700, justify="left").grid(
+                          wraplength=520, justify="left").grid(
                     row=r0 + i, column=2, sticky="w", padx=6)
 
         t1 = ttk.Frame(nb); nb.add(t1, text="基本")
@@ -1851,42 +2588,148 @@ class App:
              "留空 = 不送出該參數，改用 llama.cpp 內建預設。\n"
              "★ n-max 官方預設是 3，不是 4。實測在 VRAM 較小的顯卡上 2~3 常常比 4 快——\n"
              "  草稿太長會讓額外成本吃掉收益，硬體越受限越明顯。建議自己從 1 掃到 6 找甜蜜點。")
+        t7 = ttk.Frame(nb); nb.add(t7, text="LoRA")
+        _lora_note = ("LoRA adapter（.gguf）。啟動時送 --lora <路徑>；留空 = 不送。\n"
+                      "★ 需搭配支援 LoRA 的執行檔；且 LoRA 是綁在「哪一顆基底模型」上，\n"
+                      "  基底不符會載入報錯或完全無效（llama.cpp 只對支援的路徑套用）。")
+        ttk.Label(t7, text=_lora_note, foreground="#666", wraplength=560,
+                  justify="left").grid(row=0, column=0, columnspan=3, sticky="w",
+                                       padx=6, pady=(8, 4))
+        ttk.Label(t7, text="LoRA 適配檔路徑").grid(row=1, column=0, sticky="w", padx=6, pady=3)
+        _e_lora = ttk.Entry(t7, textvariable=self.adv["lora"], width=46)
+        _e_lora.grid(row=1, column=1, sticky="w", padx=6)
+        _bf = ttk.Frame(t7)
+        _bf.grid(row=1, column=2, sticky="w", padx=6)
+
+        def _pick_lora():
+            f = filedialog.askopenfilename(
+                title="選擇 LoRA 適配檔",
+                filetypes=[("GGUF 適配檔", "*.gguf"), ("所有檔案", "*.*")],
+                parent=None)
+            if f:
+                self.adv["lora"].set(os.path.normpath(f))
+
+        _b_pick = ttk.Button(_bf, text="📂 瀏覽…", command=_pick_lora)
+        _b_pick.pack(side="left")
+        _b_clear = ttk.Button(_bf, text="✕", width=3,
+                              command=lambda: self.adv["lora"].set(""))
+        _b_clear.pack(side="left", padx=4)
+
+        # 強度（scale）：啟動後以 API 套用（繞開 --lora-scaled 在 Windows 的冒號衝突）
+        ttk.Label(t7, text="強度 scale").grid(row=2, column=0, sticky="w", padx=6, pady=3)
+        _e_ls = ttk.Combobox(t7, textvariable=self.adv["lora_scale"], width=10,
+                             values=["", "0.5", "1.0", "1.5", "2.0", "2.5", "3.0"],
+                             state="normal")
+        _e_ls.grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(t7, text="留空＝1.0（llama.cpp 預設）。1＝官方建議；頑固題材可試 2（更高會開始崩壞）。\n"
+                          "啟動後自動以 API POST /lora-adapters 套用。",
+                  foreground="#666", justify="left", wraplength=520).grid(
+            row=2, column=2, sticky="w", padx=6)
+        Tip(_e_ls, "LoRA 強度 scale（不需重啟即可調整）。\n"
+                   "留空 = 用 llama.cpp 預設 1.0。\n"
+                   "官方建議：0＝原始模型（對照組）、1＝精確投影、2＝連頑固題材也翻、3+＝開始崩壞。\n"
+                   "★ 本 UI 用啟動後 POST /lora-adapters 套用，"
+                   "因為 --lora-scaled 的 FNAME:SCALE 在 Windows 會與磁碟機代號（如 C:）衝突而報錯。")
+        Tip(_e_lora, "旗標：--lora FNAME\n"
+                     "LoRA 適配檔的完整路徑（.gguf）。\n"
+                     "要用不同強度時 llama.cpp 另有 --lora-scaled FNAME:SCALE（本 UI 暫不支援）。\n"
+                     "留空＝不送這個參數。")
+
+        t8 = ttk.Frame(nb); nb.add(t8, text="自訂指令")
+        ttk.Label(t8, text=("直接附加到 llama-server 啟動指令的「最後面」。\n"
+                            "留空＝不附加。格式與你在命令列打的一樣，會用空白拆成多個參數；\n"
+                            "路徑含空白時用雙引號包起來，例如：\n"
+                            '    --lora-scaled "C:\\models\\lora.gguf:1.5" --no-mmap'),
+                  foreground="#666", wraplength=620, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 4))
+        ttk.Label(t8, text="自訂參數").grid(row=1, column=0, sticky="w", padx=6, pady=(3, 3))
+        _e_extra = ttk.Entry(t8, textvariable=self.adv["extra_args"], width=52)
+        _e_extra.grid(row=1, column=1, sticky="w", padx=6)
+        _bx = ttk.Frame(t8)
+        _bx.grid(row=1, column=2, sticky="w", padx=6)
+        ttk.Button(_bx, text="✕", width=3,
+                   command=lambda: self.adv["extra_args"].set("")).pack(side="left")
+        Tip(_e_extra, "這裡填的內容會『原樣』接在整條指令最後。\n"
+                      "會自動用空白拆成多個參數（跟命令列一樣）；含空白的路徑請用雙引號包住。\n"
+                      "★ 這是最後手段：UI 已有的欄位優先，這裡只補 UI 沒有的旗標。\n"
+                      "★ 打錯的旗標會讓 llama-server 啟動失敗（錯誤會顯示在日誌）。\n"
+                      "可用主視窗的「預覽完整指令」先確認送出內容。")
+
+        t6 = ttk.Frame(nb); nb.add(t6, text="載入模式")
+        fill(t6, ADV_LOAD,
+             "控制模型檔怎麼載入記憶體。留空 = 不送出，用 llama.cpp 內建預設（-lm auto / -lzm auto）。\n"
+             "★ -lm mmap 搭配 -lzm on：大型 tensor 不常駐，可明顯降低 RAM 佔用（適合大模型）。\n"
+             "  -lzm on 需要 mmap，所以 -lm 要選 mmap 或 auto。")
 
         bf = ttk.Frame(w)
-        bf.pack(fill="x", padx=10, pady=(0, 10))
-        b_all = ttk.Button(bf, text="🧹 全部清空（25 項）", command=self._clear_all)
+        bf.pack(fill="x", padx=10, pady=(4, 2))
+        b_all = ttk.Button(bf, text=f"🧹 全部清空（{len(ADV_CORE+ADV_OPT+ADV_SPEC+ADV_MOE+ADV_LOAD+ADV_LORA+ADV_EXTRA)+1} 項）",
+                           command=self._clear_all)
         b_all.pack(side="left", padx=4)
-        Tip(b_all, "把 25 項參數（含「基本」4 項與「投機解碼」4 項）全部清空，\n啟動時改用 llama.cpp 內建預設值\n"
-                   "（temp 0.80 / top-p 0.95 / top-k 40 / min-p 0.05…）")
+        Tip(b_all, "把全部參數（含「基本」4 項、「投機解碼」、MoE 層數、載入模式）全部清空，\n"
+                   "啟動時改用 llama.cpp 內建預設值\n（temp 0.80 / top-p 0.95 / top-k 40 / min-p 0.05…）")
         b_opt = ttk.Button(bf, text="只清可選 17 項", command=self._clear_optional)
         b_opt.pack(side="left", padx=4)
         Tip(b_opt, "只清可選的 17 項，保留「基本」4 項與「投機解碼」4 項\n（temp / top-p / top-k / min-p 與 spec-draft 參數）")
         ttk.Button(bf, text="預覽完整指令", command=self._preview_cmd).pack(side="left", padx=4)
         ttk.Button(bf, text="💾 立即儲存設定", command=self._manual_save).pack(side="left", padx=4)
-        ttk.Label(bf, text="（欄位一改就會自動存檔）", foreground="#666").pack(side="left", padx=6)
-        ttk.Button(bf, text="．插入小數點", command=self._insert_dot).pack(side="left", padx=4)
-        _bd = ttk.Button(bf, text="🔍 按鍵偵錯", command=self._toggle_keydbg)
+        ttk.Button(bf, text="關閉", command=w.destroy).pack(side="right", padx=4)
+        # 第二列：冷門功能，避免窄視窗時把主要按鈕擠掉
+        bf2 = ttk.Frame(w)
+        bf2.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(bf2, text="（欄位一改就會自動存檔）", foreground="#666").pack(side="left", padx=4)
+        ttk.Button(bf2, text="．插入小數點", command=self._insert_dot).pack(side="left", padx=4)
+        _bd = ttk.Button(bf2, text="🔍 按鍵偵錯", command=self._toggle_keydbg)
         _bd.pack(side="left", padx=4)
         Tip(_bd, "開啟後，你按的每個鍵都會把 keysym / keycode / char 寫進主視窗日誌。")
-        ttk.Button(bf, text="關閉", command=w.destroy).pack(side="right", padx=4)
+        ttk.Label(bf2, text="ESC 可關閉本視窗", foreground="#666").pack(side="right", padx=6)
         bind_numeric_tree(w)
         self._watch_focus(w)      # 進階視窗裡的欄位也納入「最後用過的欄位」
         self._enable_keydbg(w)    # 偵錯開著時立刻生效
 
+        # 依「目前分頁」的實際內容調整高度：ttk.Notebook 預設永遠取「最高分頁」的高度，
+        # 所以矮分頁底下會固定空一大塊（實測最多 128px）。這裡直接改 Notebook 高度來貼合。
+        # 寬度同理：取「最寬分頁」的需求寬 + 邊距，避免右側出現大片空白。
+        w.update_idletasks()
+        _need_w = max(w.nametowidget(t).winfo_reqwidth() for t in nb.tabs())
+        _win_w = max(700, min(_need_w + 70, w.winfo_screenwidth() - 100))
+
+        def _fit_tab(_e=None):
+            try:
+                w.update_idletasks()
+                _tab = nb.nametowidget(nb.select())
+                nb.configure(height=_tab.winfo_reqheight())
+                w.update_idletasks()
+                _h = max(260, min(w.winfo_reqheight() + 12, w.winfo_screenheight() - 120))
+                _x, _y = w.winfo_x(), w.winfo_y()
+                w.geometry(f"{_win_w}x{_h}+{_x}+{_y}")
+            except Exception:
+                pass
+        nb.bind("<<NotebookTabChanged>>", _fit_tab)
+        w.after(120, _fit_tab)
+
     def _clear_all(self):
-        """清空全部 25 項參數（含「基本」4 項與「投機解碼」4 項）→ 啟動時用 llama.cpp 內建預設。"""
+        """清空全部參數（含「基本」「投機解碼」「MoE」「載入模式」）→ 啟動時用 llama.cpp 內建預設。"""
+        _all = ADV_CORE + ADV_OPT + ADV_SPEC + ADV_MOE + ADV_LOAD + ADV_LORA + ADV_EXTRA
+        _n = len(_all)
         if not messagebox.askyesno(
-                "清空全部 25 項參數",
-                "會把全部 25 項（含「基本」的 temp / top-p / top-k / min-p\n"
-                "與「投機解碼」的 spec-draft 參數）清成空白，\n"
+                f"清空全部 {_n} 項參數",
+                f"會把全部 {_n} 項（含「基本」的 temp / top-p / top-k / min-p、\n"
+                "「投機解碼」、MoE 放 CPU 層數、載入模式、LoRA、自訂指令）清成空白，\n"
                 "啟動時改用 llama.cpp 內建預設：\n"
                 "    temp 0.80 / top-p 0.95 / top-k 40 / min-p 0.05 / n-max 3 …\n\n"
                 "（欄位一改就自動存檔，所以清空後會立刻覆蓋你目前的設定）\n\n要繼續嗎？"):
             return
         n = 0
-        for r in ADV_CORE + ADV_OPT + ADV_SPEC:
+        for r in _all:
             self.adv[r[1]].set("")
             n += 1
+        # 思考強度 / LoRA 強度有專屬 UI（不在清單內）→ 一起清
+        for _extra in ("rea_effort", "lora_scale"):
+            if _extra in self.adv:
+                self.adv[_extra].set("")
+                n += 1
+        self._lora_applied = None        # 清空後允許重新套用
         messagebox.showinfo("已清空", f"已清空 {n} 項參數。\n"
                                       "可按「預覽完整指令」確認實際送出的參數。")
 

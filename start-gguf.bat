@@ -1,6 +1,7 @@
 @echo off
 REM llama-server launcher (non-UI). Portable: every path is relative to this .bat's folder.
-REM Runtime: always uses .\runtime\llama-server.exe (see README for where to get it).
+REM Runtime: always uses .\runtime\llama-server.exe (official llama.cpp build).
+REM          Put an official llama.cpp build (llama-server.exe + its DLLs) into .\runtime\
 REM
 REM Usage:
 REM   start-gguf.bat                            list models, start the first usable one
@@ -48,9 +49,9 @@ if not "%~3"=="" (
 if "%MODEL%"=="" (
   echo [INFO] No model given - models in this folder:
   for %%F in ("%BASE%*.gguf") do (
-    echo %%~nxF | findstr /i "dspark dflash draft mtp" >nul
+    echo "%%~nxF" | findstr /i "dspark dflash draft mtp" >nul
     if errorlevel 1 (
-      echo          %%~nxF
+      echo          "%%~nxF"
       if not defined MODEL set "MODEL=%%~fF"
     )
   )
@@ -61,24 +62,37 @@ REM bare filename -> make it absolute against this folder (CWD may differ)
 if not "%~1"=="" if exist "%BASE%%~1" set "MODEL=%BASE%%~1"
 
 if "%MODEL%"=="" (
-  echo [ERROR] no usable .gguf model found in %BASE%
+  echo [ERROR] no usable .gguf model found in "%BASE%"
   pause
   exit /b 1
 )
 if not exist "%MODEL%" (
-  echo [ERROR] model not found: %MODEL%
+  echo [ERROR] model not found: "%MODEL%"
   echo         usage: start-gguf.bat ^<model-file^> [jinja^|dryrun]
   pause
   exit /b 1
 )
 if not exist "%RT%\llama-server.exe" (
-  echo [ERROR] llama-server.exe not found in %RT%
+  echo [ERROR] llama-server.exe not found in "%RT%"
   pause
   exit /b 1
 )
 
 REM alias follows the model file name (the GUI reads general.name from the GGUF header)
 for %%F in ("%MODEL%") do set "ALIAS=%%~nF"
+REM SECURITY: the alias below is put on a cmd.exe command line. A model named
+REM e.g. "evil&calc.gguf" would otherwise execute "calc" when this script runs,
+REM so strip every character that can break out of a command, then quote it.
+setlocal EnableDelayedExpansion
+set "ALIAS=!ALIAS:&=!"
+set "ALIAS=!ALIAS:|=!"
+set "ALIAS=!ALIAS:<=!"
+set "ALIAS=!ALIAS:>=!"
+set "ALIAS=!ALIAS:(=!"
+set "ALIAS=!ALIAS:)=!"
+set "ALIAS=!ALIAS:^=!"
+endlocal & set "ALIAS=%ALIAS%"
+if not defined ALIAS set "ALIAS=model"
 
 REM ---- drafter auto-pairing: same family only ----
 set "DRAFTER="
@@ -109,6 +123,15 @@ set "SPECFLAGS=-md "%DRAFTER%" --spec-type %SPEC%"
 REM Speculative knobs are OPTIONAL: only send what the user set, else use llama.cpp
 REM defaults. Never hardcode n-max=4 - the llama.cpp default is 3, and on small-VRAM
 REM cards 2-3 is often faster (extra draft length costs more than it gains).
+REM SECURITY: these four knobs come from the caller (3rd argument) or the environment.
+REM They are pasted onto a cmd.exe command line further down, so accept plain digits
+REM only - anything else is dropped, never executed.
+setlocal EnableDelayedExpansion
+for /f "tokens=1 delims=0123456789" %%D in ("!SPEC_N_MAX!")   do set "SPEC_N_MAX="
+for /f "tokens=1 delims=0123456789" %%D in ("!SPEC_N_MIN!")   do set "SPEC_N_MIN="
+for /f "tokens=1 delims=0123456789" %%D in ("!SPEC_P_SPLIT!") do set "SPEC_P_SPLIT="
+for /f "tokens=1 delims=0123456789" %%D in ("!SPEC_P_MIN!")   do set "SPEC_P_MIN="
+endlocal & set "SPEC_N_MAX=%SPEC_N_MAX%" & set "SPEC_N_MIN=%SPEC_N_MIN%" & set "SPEC_P_SPLIT=%SPEC_P_SPLIT%" & set "SPEC_P_MIN=%SPEC_P_MIN%"
 if defined SPEC_N_MAX   set "SPECFLAGS=%SPECFLAGS% --spec-draft-n-max %SPEC_N_MAX%"
 if defined SPEC_N_MIN   set "SPECFLAGS=%SPECFLAGS% --spec-draft-n-min %SPEC_N_MIN%"
 if defined SPEC_P_SPLIT set "SPECFLAGS=%SPECFLAGS% --spec-draft-p-split %SPEC_P_SPLIT%"
@@ -122,11 +145,11 @@ set "SPECFLAGS="
 :specdone
 
 echo Starting llama-server on 127.0.0.1:%PORT% ...
-echo Runtime : %RT%
-echo Model   : %MODEL%
-echo Alias   : %ALIAS%  ^| Spec : %SPEC%  ^| Jinja : %EXTRA%
+echo Runtime : "%RT%"
+echo Model   : "%MODEL%"
+echo Alias   : "%ALIAS%"  ^| Spec : "%SPEC%"  ^| Jinja : "%EXTRA%"
 echo Command :
-echo llama-server.exe -m "%MODEL%" --alias %ALIAS% %EXTRA% -ngl all -ngld all -fa on -ctk q4_0 -ctv q4_0 -nkvo -c 65536 -np 1 --host 127.0.0.1 --port %PORT% --temp 0.8 --top-p 0.95 --top-k 40 --min-p 0.05 %SPECFLAGS%
+echo llama-server.exe -m "%MODEL%" --alias "%ALIAS%" %EXTRA% -ngl all -ngld all -fa on -ctk q4_0 -ctv q4_0 -nkvo -c 65536 -np 1 --host 127.0.0.1 --port %PORT% --temp 0.8 --top-p 0.95 --top-k 40 --min-p 0.05 %SPECFLAGS%
 
 if defined DRY (
   echo [dryrun] the command above was NOT executed.
@@ -134,6 +157,6 @@ if defined DRY (
 )
 
 cd /d "%RT%"
-llama-server.exe -m "%MODEL%" --alias %ALIAS% %EXTRA% -ngl all -ngld all -fa on -ctk q4_0 -ctv q4_0 -nkvo -c 65536 -np 1 --host 127.0.0.1 --port %PORT% --temp 0.8 --top-p 0.95 --top-k 40 --min-p 0.05 %SPECFLAGS%
+llama-server.exe -m "%MODEL%" --alias "%ALIAS%" %EXTRA% -ngl all -ngld all -fa on -ctk q4_0 -ctv q4_0 -nkvo -c 65536 -np 1 --host 127.0.0.1 --port %PORT% --temp 0.8 --top-p 0.95 --top-k 40 --min-p 0.05 %SPECFLAGS%
 
 endlocal

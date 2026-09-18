@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Rewrite a legacy arch=dspark drafter GGUF into the arch=dflash convention.
 
-Derived from two known-good pairs (dspark-r16b-block7 and
-dspark-btl6l1-binary-cont6k-logtau-24k), where the legacy file and its shipped
--v6 re-export differ only in metadata and tensor names. Tensor data is copied
-byte for byte; nothing is requantized.
+Derived from known-good pairs of a legacy arch=dspark drafter and its
+re-exported dflash file, which differ only in metadata and tensor names.
+Tensor data is copied byte for byte; nothing is requantized.
 
 The transform:
   general.architecture   dspark -> dflash

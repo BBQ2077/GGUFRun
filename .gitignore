@@ -1,12 +1,34 @@
-# Models and runtime binaries are NOT part of this repo (too large).
+# ---- Models and runtime binaries are NOT part of this repo (too large) ----
 *.gguf
+gguf/
 runtime/
+*-runtime/
 
-# Auto-generated at runtime (machine-specific absolute paths inside).
+# ---- Auto-generated at runtime (machine-specific absolute paths inside) ----
 ui-settings.json
 models.json
+presets.json
+tools/_webview_profile/
 
-# Logs and caches.
+# ---- Logs and caches ----
 *.log
 __pycache__/
 *.pyc
+*.pyo
+
+# ---- Dev backups / half-finished downloads / scratch ----
+*.bak
+*.bak-*
+tools/backups/
+*.crdownload
+*.part
+*.parts/
+*.tmp
+*.swp
+
+# ---- Editor / OS junk ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

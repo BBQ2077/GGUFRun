@@ -5,6 +5,8 @@
 > 選模型、選草稿模型（DF）、切換執行檔、啟停伺服器 —— 一個視窗搞定。
 > Pick a model, pick a draft model (DF), switch runtime, start/stop the server — all in one window.
 
+**Version 2.0** (2026-09-18) ｜ [CHANGELOG](CHANGELOG.md)
+
 [English](#english) ｜ [繁體中文](#繁體中文)
 
 ---
@@ -19,20 +21,39 @@ of `.gguf` models tidy and lets you launch local inference without memorizing CL
 It is **portable**: everything resolves relative to the script's own folder. Copy the folder
 anywhere (another disk, a USB stick, another machine) and it still works — no absolute paths baked in.
 
+**v2.0 adds**: parameter **templates** (one parameter set per model, auto-applied), a **MoE / dense
+offload** section (`-ncmoe` / `-ncffn`), **load-mode / lazy-mode**, a **LoRA** tab (scale applied live
+through the API), **reasoning effort / budget**, and a **lightweight browser window** that uses an
+isolated Chrome/Edge profile instead of your daily one.
+
 ### Features
 
 - **Model picker** — auto-scans `*.gguf` in the app folder, plus manually added models remembered in `models.json`.
 - **Draft model (DF) picker** — for speculative decoding. Auto-pairs with the main model, or pick one manually.
-- **Runtime switcher** — scans every sub-folder containing `llama-server.exe`.
+- **Runtime switcher** — scans every sub-folder containing `llama-server.exe`, and warns when the
+  selected runtime is known not to support the selected model's architecture.
 - **Start / stop the server** with one click; live log pane; port is configurable.
 - **Preview the exact command** before launching (dry-run view).
+- **Parameter templates** (`presets.json`) — save a named parameter set, bind it to a model; switching
+  models re-applies that model's template *and* its last-used runtime automatically.
 - **Sampling controls** — Temperature / Top-P / Top-K / Min-P + 17 optional knobs,
-  defaults matched to `llama.cpp` built-ins (`0.8 / 0.95 / 40 / 0.05`).
+  defaults matched to `llama.cpp` built-ins (`0.8 / 0.95 / 40 / 0.05`). Empty field = flag not sent.
+- **More settings** — KV cache type (K/V), thinking mode (`-rea`) and reasoning effort/budget,
+  MoE expert offload (`-ncmoe` / `--n-cpu-moe`), dense-FFN offload (`-ncffn` / `--n-cpu-ffn`).
+- **LoRA tab** — `--lora <file.gguf>` plus a strength slider applied after startup via
+  `POST /lora-adapters` (no restart needed).
+- **Custom arguments** — append anything to the end of the launch command (quote-aware).
+- **Lightweight web view** — opens the local UI in a Chromium `--app` window with its own throwaway
+  profile (no extensions, no shared cookies); falls back to your default browser if Chrome/Edge is absent.
+- **Duplicate-server guard** — every start checks for an already-running `llama-server`
+  (take over / restart / cancel). **No-orphan guard** — closing the window shuts down only the
+  exact PID this app spawned, with an `atexit` fallback.
 - **Auto-remembered settings** — model, DF, runtime, port, mode, sampling values persist in `ui-settings.json`.
 - **Model classification memory** — whether a file is a *main model* or a *draft model* is remembered
   the first time you say so; filenames are only a hint, never a verdict.
 - **Safe delete** — removing a model entry can send the file to the **Windows Recycle Bin**
   (recoverable). This app never performs an irreversible delete.
+- **Built-in key debugger** — for keys that don't register (e.g. numpad `.` with NumLock off).
 
 ### Requirements
 
@@ -110,8 +131,9 @@ Pick whatever quantization suits your VRAM — there is no required naming conve
    ```
    python gguf-ui.py
    ```
-4. Pick a model, optionally pick a draft model, press **▶ Start**.
-5. Open `http://127.0.0.1:18435/` (the port is shown / editable in the UI).
+4. Pick a model, optionally pick a draft model, press **▶ 啟動 / Start**.
+5. Open `http://127.0.0.1:18435/` (the port is shown / editable in the UI), or press the
+   **🌐 開網頁（輕量）** button.
 
 Command-line alternative (no window):
 
@@ -170,6 +192,36 @@ start-gguf.bat YourModel.gguf jinja 3      # 3rd arg = --spec-draft-n-max
 set SPEC_N_MAX=3 && start-gguf.bat YourModel.gguf
 ```
 
+### Parameter templates (`presets.json`)
+
+A *template* is a named snapshot of the launch settings (context, KV types, `-ngl`, thinking mode,
+offload, sampling values, …). Pick a template and it is applied immediately; bind it to a model and
+it is re-applied every time that model is selected — including the runtime folder that model last
+used. This is how you keep, say, a chat-tuned profile and a long-context profile side by side
+without touching a single field again.
+
+### More settings, offload and LoRA
+
+| Where | What |
+|---|---|
+| More settings (`更多設定`) | KV cache type K/V, `-ngl` / `-ngld`, thinking mode, reasoning budget, port |
+| Advanced → 載入模式 | `--load-mode` / `--lazy-mode` (mmap / lazy tensor reads; `auto` = only tensors > 4 GiB) |
+| Advanced → 其他 | `--reasoning-effort`, presence/frequency penalty, XTC, typical, dynatemp, mirostat |
+| Advanced → LoRA | `--lora <file.gguf>` + strength scale via `POST /lora-adapters` |
+| Advanced → 自訂指令 | Anything you want appended verbatim to the command (quote-aware) |
+
+Offload fields are the answer to "the model doesn't fit": `-ncmoe N` keeps the first N layers'
+**expert** weights (MoE models) on the CPU, `-ncffn N` does the same for **dense FFN** weights.
+Both are sent only if you fill them in.
+
+### Lightweight web view
+
+**🌐 開網頁（輕量）** launches Chrome (or Edge) with `--app` and a dedicated profile directory at
+`tools/_webview_profile/` — no tabs, no extensions, no access to your daily browsing profile.
+Same page, same size: measured 2606 MB (daily Chrome, many tabs) vs 585 MB (this way).
+If neither browser is found it falls back to your default browser. Delete `tools/_webview_profile/`
+any time to reset it.
+
 ### How models are classified
 
 1. **Memory first.** If a file was ever classified via **➕ Add model / ➕ Add DF**, the remembered
@@ -182,32 +234,43 @@ set SPEC_N_MAX=3 && start-gguf.bat YourModel.gguf
 | File / folder | Purpose |
 |---|---|
 | `gguf-ui.py` | The GUI console |
-| `start-ui.bat` | Launches the GUI using the system Python |
+| `start-ui.bat` | Launches the GUI using Python from `PATH` (or the per-user Python 3.14 install) |
 | `start-gguf.bat` | Headless CLI launcher: `start-gguf.bat <model.gguf> [jinja] [dryrun]` |
 | `ui-settings.json` | Auto-saved UI state (created on first run; machine-specific, git-ignored) |
 | `models.json` | Manually added models / DF and their remembered classification (git-ignored) |
+| `presets.json` | Parameter templates and their model bindings (git-ignored) |
+| `tools/_webview_profile/` | Throwaway browser profile for the lightweight window (created on first use, git-ignored) |
 | `runtime/` | Your `llama-server.exe` build (not in this repo) |
 | `*.gguf` | Your models (not in this repo) |
 | `pardl.py` | Parallel ranged downloader: `python pardl.py <url> <out-file> [connections]` (default 8). Splits a file into ranges, downloads them concurrently, resumes from finished `.parts/` chunks, then merges. Handy for big model files from hosts that cap a single connection's speed. |
 | `tools/` | Helper scripts (see below) |
 
-#### `tools/`
+Generated at runtime and intentionally **git-ignored**: `ui-settings.json`, `models.json`,
+`presets.json`, `tools/_webview_profile/`, `*.gguf`, `runtime/`, `*.log`, `__pycache__/`.
+
+### `tools/`
 
 | File | What it does |
 |---|---|
 | `gguf_dspark_to_dflash.py` | Rewrites a legacy `arch=dspark` drafter GGUF into the current `arch=dflash` convention (renames metadata/tensors, shifts `target_layers`, injects the tokenizer from a donor GGUF). Copies tensor bytes as-is — nothing is requantized. Only needed if you have an older draft model the runtime no longer accepts. |
-| `key-probe.py` | Keyboard diagnostic. Prints every key's `keysym` / `char` / `keycode` and writes `key-probe.log`. Used to figure out odd keys (e.g. numpad `.` with NumLock off). |
-| `run-key-probe.bat` | Double-click launcher for `key-probe.py`. |
+| `key-probe.py` + `run-key-probe.bat` | Keyboard diagnostic. Prints every key's `keysym` / `char` / `keycode` and writes `key-probe.log`. Used to figure out odd keys (e.g. numpad `.` with NumLock off). The GUI has the same thing built in (**🔍 按鍵偵錯**). |
+| `_arch.py` | Reads a GGUF's header metadata (architecture, block/expert counts, context length, …) without loading the model. `python tools/_arch.py model.gguf` |
+| `_ttype.py` | Prints a GGUF's tensor type histogram (how many tensors of each quant type) — useful to see what a "Q4_K_M" file really contains. |
+| `_bench_ncmoe.py` | Small benchmark: same model, different `-ncmoe` values, measuring load time and tokens/s. `python tools/_bench_ncmoe.py [0 16 off ...]` (uses `MODEL` / `RT_DIR` / `PORT` env vars) |
 
-Generated at runtime and intentionally **git-ignored**: `ui-settings.json`, `models.json`,
-`*.gguf`, `runtime/`, `*.log`, `__pycache__/`.
+### Privacy & security
 
-### `tools/`
-
-| Script | Purpose |
-|---|---|
-| `gguf_dspark_to_dflash.py` | Utility to convert/patch draft-model metadata between `dspark` and `dflash` flavours. |
-| `key-probe.py` + `run-key-probe.bat` | Small keyboard diagnostic: prints the raw keysym/keycode of each key press. Useful when a numpad key behaves oddly under different NumLock / IME states. |
+- **No telemetry, no accounts, no phone-home.** The app makes no outbound network request at all.
+  The only HTTP traffic is to `llama-server` on `127.0.0.1`.
+- **Localhost only.** `llama-server` is started with `--host 127.0.0.1`, so it is not reachable from
+  your LAN or the internet. Change the port, not the bind address.
+- **No secrets.** No API keys, tokens or credentials are stored, requested or transmitted.
+- **Self-contained writes.** Everything the app writes (`ui-settings.json`, `models.json`,
+  `presets.json`, `tools/_webview_profile/`) stays inside the app folder.
+- **Isolated browser profile.** The lightweight window never touches your normal Chrome/Edge
+  profile, cookies or extensions.
+- **Non-destructive by default.** Deleting a model goes to the Recycle Bin, and the process guard
+  only ever kills the exact PID it started.
 
 ### Troubleshooting
 
@@ -215,12 +278,13 @@ Generated at runtime and intentionally **git-ignored**: `ui-settings.json`, `mod
 |---|---|
 | `start-ui.bat` opens nothing | Make sure `python` is on `PATH`, or that Python is installed to the default location. Install from python.org with the *tcl/tk* option enabled. |
 | Runtime dropdown is empty | No sub-folder contains `llama-server.exe`. Create `runtime/` and put it there. |
-| Server exits immediately | Check the log pane. Common causes: mismatched draft model family, unsupported model architecture, or insufficient VRAM — try lowering `-ngl`. |
-| Numpad decimal point types nothing | Windows sends a different key code when NumLock is off. The app handles it; if it still misbehaves, run `tools/run-key-probe.bat` and check the log. |
+| Server exits immediately | Check the log pane. Common causes: mismatched draft model family, unsupported model architecture, or insufficient VRAM — try lowering `-ngl`, or offload some layers with `-ncmoe` / `-ncffn`. |
+| Numpad decimal point types nothing | Windows sends a different key code when NumLock is off. The app handles it; if it still misbehaves, use **🔍 按鍵偵錯** or run `tools/run-key-probe.bat` and check the log. |
+| "Port already in use" | Another `llama-server` is still running. The app asks whether to take it over, restart it, or cancel. |
 
 ### License
 
-No license file is included yet. Add one of your choosing before publishing or redistributing.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
@@ -234,20 +298,35 @@ GGUFRun 是 `llama.cpp` 的 `llama-server` 的一個小型 **Tkinter 圖形前�
 它是**可攜的**：所有路徑都以程式自己所在的資料夾為基準動態解析。整個資料夾複製到
 任何地方（別的磁碟、隨身碟、別的電腦）都能直接跑，沒有寫死的絕對路徑。
 
+**2.0 版新增**：**參數模板**（每個模型一套參數，選到就自動套用）、**MoE／密集 FFN 放 CPU**
+（`-ncmoe` / `-ncffn`）、**載入模式／延遲模式**、**LoRA 分頁**（強度可啟動後即時調整）、
+**思考強度／思考預算**，以及**輕量瀏覽器視窗**（用獨立的 Chrome／Edge profile，不碰你日常的分頁與擴充功能）。
+
 ### 功能
 
 - **主模型選擇**：自動掃描程式資料夾內的 `*.gguf`，加上手動添加（記在 `models.json`）的模型。
 - **草稿模型（DF）選擇**：用於投機解碼，可依主模型自動配對，也可手動指定。
-- **執行檔切換**：自動掃描所有含 `llama-server.exe` 的子資料夾。
+- **執行檔切換**：自動掃描所有含 `llama-server.exe` 的子資料夾，並在「這套執行檔已知載不動這顆模型的架構」時提醒你。
 - **一鍵啟停伺服器**：即時日誌視窗；埠可自訂。
 - **啟動前預覽完整指令**（dry-run）。
+- **參數模板**（`presets.json`）：把一整套啟動參數存成具名模板、綁定到某顆模型；之後一選到那顆模型，
+  參數**和上次用的執行檔**都會自動還原。
 - **取樣參數控制**：Temperature / Top-P / Top-K / Min-P ＋ 17 項選配，
-  預設值對齊 `llama.cpp` 內建預設（`0.8 / 0.95 / 40 / 0.05`）。
+  預設值對齊 `llama.cpp` 內建預設（`0.8 / 0.95 / 40 / 0.05`）。**留空＝不送出該參數**。
+- **更多設定**：KV 型別（K/V）、思考模式（`-rea`）與思考強度／預算、
+  MoE 專家權重放 CPU（`-ncmoe` / `--n-cpu-moe`）、密集 FFN 放 CPU（`-ncffn` / `--n-cpu-ffn`）。
+- **LoRA 分頁**：`--lora <檔.gguf>` 加一組強度；強度開機後以 `POST /lora-adapters` 即時套用，不必重啟。
+- **自訂指令**：任何想加在啟動指令最後面的參數（會正確處理引號）。
+- **輕量網頁視窗**：用 Chromium 的 `--app` ＋ 專屬臨時 profile 開本地網頁（無分頁、無擴充功能、不共用你的 cookie）；
+  找不到 Chrome／Edge 時退回系統預設瀏覽器。
+- **防重複啟動**：每次按「啟動」都會預檢既有的 `llama-server`（接管／終止並重啟／取消）。
+  **防孤兒**：關窗只收掉本程式自己開的那個 **exact PID**，程式結束另有 `atexit` 保底清理。
 - **設定自動記憶**：主模型、DF、執行檔、埠、模式、取樣值都存進 `ui-settings.json`。
 - **模型分類記憶**：一個檔案是「主模型」還是「草稿模型」，你分類過一次就會記住；
   檔名只是提示，永遠不會蓋過你的選擇。
 - **安全刪除**：移除模型項目時可把檔案**丟進 Windows 資源回收桶**（可還原）。
   本程式不做任何無法挽回的永久刪除。
+- **內建按鍵偵錯**：處理按不出來的鍵（例如 NumLock 關閉時的數字鍵盤 `.`）。
 
 ### 系統需求
 
@@ -323,7 +402,7 @@ GGUFRun/
    python gguf-ui.py
    ```
 4. 選主模型、（可選）選草稿模型，按 **▶ 啟動**。
-5. 開啟 `http://127.0.0.1:18435/`（埠在 UI 上可看可改）。
+5. 開啟 `http://127.0.0.1:18435/`（埠在 UI 上可看可改），或直接按 **🌐 開網頁（輕量）**。
 
 純命令列（不開視窗）：
 
@@ -353,12 +432,6 @@ start-gguf.bat YourModel-Q4_K_M.gguf jinja dryrun # 只印指令，不啟動
   因此程式只把 `mtp` 當**提示**：大的 `mtp` 檔歸類為主模型，小的歸為草稿候選；
   而且只要你分類過一次，就會記住，之後檔名不再蓋過你的選擇。
 
-### 模型如何分類
-
-1. **記憶優先。** 只要曾用「➕ 添加模型 / ➕ 添加 DF」分類過，記住的 `kind` 永遠優先。
-2. **其次才是檔名提示。** `draft` / `dspark` / `dflash` → 草稿模型；
-   `mtp` 且檔案偏小（< 1 GiB）→ 草稿模型；其餘 → 主模型。
-
 #### 草稿長度怎麼調（`--spec-draft-n-max`）
 
 `llama.cpp` 預設一次草稿 **3** 個 token。**不要以為 4 最好**——那不是規則，也不是
@@ -385,29 +458,78 @@ start-gguf.bat 你的模型.gguf jinja 3      # 第 3 個參數 = --spec-draft-n
 set SPEC_N_MAX=3 && start-gguf.bat 你的模型.gguf
 ```
 
+### 參數模板（`presets.json`）
+
+**模板**＝一整套啟動設定的具名快照（Context、KV 型別、`-ngl`、思考模式、放 CPU 層數、取樣值…）。
+選一個模板就立刻套用；把模板**綁定**到某顆模型後，每次選到那顆模型都會自動套用，
+連「那顆模型上次用的執行檔」也會一起還原。這樣你就能同時保有「聊天用」與「長上下文」兩套
+設定，不用每次重填。
+
+### 更多設定、放 CPU 與 LoRA
+
+| 位置 | 內容 |
+|---|---|
+| 更多設定 | KV 型別 K/V、`-ngl` / `-ngld`、思考模式、思考預算、埠 |
+| 進階 → 載入模式 | `--load-mode` / `--lazy-mode`（mmap／延遲讀取；`auto`＝只對大於 4 GiB 的 tensor 這樣做） |
+| 進階 → 其他 | `--reasoning-effort`、presence／frequency penalty、XTC、typical、dynatemp、mirostat |
+| 進階 → LoRA | `--lora <檔.gguf>` ＋ 強度（啟動後以 `POST /lora-adapters` 即時套用） |
+| 進階 → 自訂指令 | 任何想原樣接在指令最後面的參數（會正確處理引號） |
+
+放 CPU 的欄位是「模型塞不下」的解法：`-ncmoe N` 把前 N 層的**專家**權重（MoE 模型）留在 CPU，
+`-ncffn N` 則是給**密集 FFN** 權重用的。兩個都**留空＝不送**。
+
+### 輕量網頁視窗
+
+**🌐 開網頁（輕量）**會用 Chrome（或 Edge）的 `--app` 模式，配上專屬 profile 目錄
+`tools/_webview_profile/` 開啟本地網頁：沒有分頁、沒有擴充功能，也不會碰到你日常的瀏覽 profile。
+同一頁同尺寸實測：日常 Chrome 多分頁 2606 MB → 這樣開 585 MB。
+找不到 Chrome／Edge 時退回系統預設瀏覽器。想清掉隨時刪除 `tools/_webview_profile/` 即可。
+
+### 模型如何分類
+
+1. **記憶優先。** 只要曾用「➕ 添加模型 / ➕ 添加 DF」分類過，記住的 `kind` 永遠優先。
+2. **其次才是檔名提示。** `draft` / `dspark` / `dflash` → 草稿模型；
+   `mtp` 且檔案偏小（< 1 GiB）→ 草稿模型；其餘 → 主模型。
+
 ### 檔案說明
 
 | 檔案／資料夾 | 用途 |
 |---|---|
 | `gguf-ui.py` | 圖形控制台本體 |
-| `start-ui.bat` | 用系統 Python 啟動控制台 |
+| `start-ui.bat` | 用系統 Python 啟動控制台（`PATH` 上的 `python`，或使用者安裝的 Python 3.14） |
 | `start-gguf.bat` | 純命令列啟動：`start-gguf.bat <模型檔> [jinja] [dryrun]` |
 | `ui-settings.json` | 自動儲存的 UI 狀態（首次執行時建立；含本機路徑，已被 git 忽略） |
 | `models.json` | 手動添加的模型／DF 與其分類記憶（已被 git 忽略） |
+| `presets.json` | 參數模板與其模型綁定（已被 git 忽略） |
+| `tools/_webview_profile/` | 輕量視窗用的臨時瀏覽器 profile（首次使用時建立，已被 git 忽略） |
 | `runtime/` | 你的 `llama-server.exe`（不在本倉庫） |
 | `*.gguf` | 你的模型（不在本倉庫） |
 | `pardl.py` | 多連線分段下載器：`python pardl.py <網址> <輸出檔> [連線數]`（預設 8）。把檔案切成數段並行下載，可從已完成的 `.parts/` 分段續傳，最後合併。適合從限制單連線速度的來源抓大型模型檔。 |
 | `tools/` | 輔助腳本（見下） |
 
-執行時產生、且刻意**被 git 忽略**：`ui-settings.json`、`models.json`、`*.gguf`、
-`runtime/`、`*.log`、`__pycache__/`。
+執行時產生、且刻意**被 git 忽略**：`ui-settings.json`、`models.json`、`presets.json`、
+`tools/_webview_profile/`、`*.gguf`、`runtime/`、`*.log`、`__pycache__/`。
 
 ### `tools/` 輔助工具
 
 | 腳本 | 用途 |
 |---|---|
 | `gguf_dspark_to_dflash.py` | 把舊的 `arch=dspark` 草稿模型 GGUF 改寫成目前的 `arch=dflash` 格式（改 metadata／tensor 名稱、位移 `target_layers`、從捐贈模型注入 tokenizer）。Tensor 位元組原樣複製，**不重新量化**。只有當你的舊草稿模型已不被 runtime 接受時才需要。 |
-| `key-probe.py` ＋ `run-key-probe.bat` | 小型鍵盤診斷：印出每次按鍵的 `keysym` / `char` / `keycode` 並寫入 `key-probe.log`。當數字鍵盤在不同 NumLock／輸入法狀態下行為怪異時很有用（例如 NumLock 關閉時的數字鍵盤 `.`）。 |
+| `key-probe.py` ＋ `run-key-probe.bat` | 小型鍵盤診斷：印出每次按鍵的 `keysym` / `char` / `keycode` 並寫入 `key-probe.log`。當數字鍵盤在不同 NumLock／輸入法狀態下行為怪異時很有用（例如 NumLock 關閉時的數字鍵盤 `.`）。UI 也有同一支功能（**🔍 按鍵偵錯**）。 |
+| `_arch.py` | 只讀 GGUF 檔頭 metadata（架構、層數／專家數、context 長度…），不必載入模型。`python tools/_arch.py model.gguf` |
+| `_ttype.py` | 印出 GGUF 的 tensor 型別分布（各種量化型別各有幾個 tensor）——用來確認一個「Q4_K_M」檔裡真正裝了什麼。 |
+| `_bench_ncmoe.py` | 小測速：同一顆模型、不同 `-ncmoe` 值，量載入時間與 tokens/s。`python tools/_bench_ncmoe.py [0 16 off ...]`（可用 `MODEL` / `RT_DIR` / `PORT` 環境變數指定） |
+
+### 隱私與安全
+
+- **沒有遙測、沒有帳號、不對外連線。** 程式本身不發任何對外網路請求，唯一的 HTTP 流量是連到
+  `127.0.0.1` 上的 `llama-server`。
+- **只綁本機。** `llama-server` 以 `--host 127.0.0.1` 啟動，區網與網際網路都連不到。要改請改埠，不要改綁定位址。
+- **不含任何機密。** 不儲存、不索取、不傳送任何 API key、token 或憑證。
+- **寫入範圍自我封閉。** 程式寫出的檔案（`ui-settings.json`、`models.json`、`presets.json`、
+  `tools/_webview_profile/`）全部留在程式自己的資料夾內。
+- **瀏覽器 profile 隔離。** 輕量視窗不會碰到你日常 Chrome／Edge 的 profile、cookie 或擴充功能。
+- **預設不破壞。** 刪除模型一律進資源回收桶；行程清理只針對本程式自己開的那個 PID。
 
 ### 疑難排解
 
@@ -415,9 +537,10 @@ set SPEC_N_MAX=3 && start-gguf.bat 你的模型.gguf
 |---|---|
 | `start-ui.bat` 沒反應 | 確認 `python` 在 `PATH` 上，或 Python 安裝在預設位置。請用 python.org 安裝檔並勾選 tcl/tk。 |
 | 執行檔下拉是空的 | 沒有任何子資料夾含 `llama-server.exe`。請建立 `runtime/` 並放進去。 |
-| 伺服器一啟動就結束 | 看日誌視窗。常見原因：草稿模型家族不符、模型架構不支援、顯存不足——試著調低 `-ngl`。 |
-| 數字鍵盤小數點打不出來 | Windows 在 NumLock 關閉時會送不同的鍵碼。程式已處理；若仍有問題，執行 `tools/run-key-probe.bat` 看日誌。 |
+| 伺服器一啟動就結束 | 看日誌視窗。常見原因：草稿模型家族不符、模型架構不支援、顯存不足——試著調低 `-ngl`，或用 `-ncmoe` / `-ncffn` 把幾層放到 CPU。 |
+| 數字鍵盤小數點打不出來 | Windows 在 NumLock 關閉時會送不同的鍵碼。程式已處理；若仍有問題，用 **🔍 按鍵偵錯** 或執行 `tools/run-key-probe.bat` 看日誌。 |
+| 說埠被佔用 | 還有另一個 `llama-server` 在跑。程式會問你要接管、終止並重啟，還是取消。 |
 
 ### 授權
 
-MIT
+MIT，見 [LICENSE](LICENSE)。
