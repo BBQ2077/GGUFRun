@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 llama-server GUI 控制台（本地模型管理｜可攜式：自動以本程式所在資料夾為基準）
-- 自動掃描「本程式所在資料夾」的 *.gguf 當主模型；不在這資料夾的模型要用「➕ 添加模型」手動加
-- 啟停本地 llama-server（自動偵測本資料夾下所有 runtime，可在 UI 切換）
+- 自動掃描「LLM-MODELS/」的 *.gguf 當主模型；外部模型要用「➕ 添加模型」手動加
+- 啟停本地 llama-server（自動偵測「RUNTIMES/」下的 llama runtime，可在 UI 切換）
 - 模式：Normal / 投機解碼（草稿模型可「自動配對」，也可從下拉手動指定，含手動添加的 DF）
 - 網頁按鈕：用瀏覽器開啟 http://127.0.0.1:<埠>/ （網址跟隨「埠」欄位變化）
 - 選項：-ngl / -ngld、KV 型別 K/V（f16/q8_0/q4_0）、Flash-Attn、Context 大小、KV 放 RAM、思考模式、思考預算、埠
@@ -15,10 +15,8 @@ llama-server GUI 控制台（本地模型管理｜可攜式：自動以本程式
 - 防孤兒：關閉視窗自動收掉 server，程式結束 atexit 保底清理（只用 exact PID）
 - 顯示狀態與即時日誌
 只用標準庫 tkinter，不需額外安裝。建議用系統 python3 執行。
-
-版本：2.0（2026-09-18）
 """
-import os, re, sys, subprocess, threading, time, socket, json, shutil, urllib.request, atexit, webbrowser
+import os, re, sys, subprocess, threading, time, socket, json, shutil, tempfile, queue, urllib.request, atexit, webbrowser
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
@@ -26,35 +24,59 @@ try:                                    # 通用：以本程式所在資料夾�
     BASE = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     BASE = os.getcwd()
-def find_runtimes():
-    """掃描本資料夾下所有含 llama-server.exe 的子資料夾（可放多套 runtime 切換）。
+LLM_MODELS = os.path.join(BASE, "LLM-MODELS")
+RUNTIME_ROOT = os.path.join(BASE, "RUNTIMES")
 
-    回傳 [(顯示名, 目錄)]，排序：runtime/ 優先，再來其他資料夾。
+
+def find_runtimes():
+    """Discover llama-server builds exclusively under RUNTIMES/<build>/.
+
+    The official build is preferred; image runtimes are not exposed here.
     """
-    out, seen = [], set()
-    for d, label in (("runtime", "官方 runtime/"),):
-        p = os.path.join(BASE, d)
-        if os.path.exists(os.path.join(p, "llama-server.exe")):
-            out.append((label, p))
-            seen.add(os.path.normcase(p))
+    out = []
     try:
-        for n in sorted(os.listdir(BASE)):
-            p = os.path.join(BASE, n)
-            if (os.path.isdir(p) and os.path.normcase(p) not in seen
-                    and os.path.exists(os.path.join(p, "llama-server.exe"))):
+        names = sorted(os.listdir(RUNTIME_ROOT), key=lambda n: (n != "llama-official", n.lower()))
+        for n in names:
+            p = os.path.join(RUNTIME_ROOT, n)
+            if os.path.isdir(p) and os.path.isfile(os.path.join(p, "llama-server.exe")):
                 out.append((n + "/", p))
-    except Exception:
+    except OSError:
         pass
     return out
 
 
 RUNTIMES = find_runtimes()
 SRV = (os.path.join(RUNTIMES[0][1], "llama-server.exe") if RUNTIMES
-       else os.path.join(BASE, "runtime", "llama-server.exe"))
+       else os.path.join(RUNTIME_ROOT, "llama-official", "llama-server.exe"))
 # 本專案自己會用到的所有 runtime 目錄（判斷「殘留的測試 server」用）
 RUNTIME_DIRS = tuple(os.path.normcase(d).lower() for _n, d in RUNTIMES) or \
                (os.path.normcase(os.path.dirname(SRV)).lower(),)
 REGISTRY = os.path.join(BASE, "models.json")     # 手動添加的模型清單（長久儲存）
+
+
+def atomic_write_json(path, data):
+    """在同一目錄完整寫好並 fsync 後原子替換；失敗時保留舊檔。"""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    tmp_path = ""
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="." + os.path.basename(path) + ".", suffix=".tmp",
+                                        dir=directory, text=True)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = ""
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _to_recycle_bin(path):
@@ -99,7 +121,7 @@ def _to_recycle_bin(path):
 
 
 def fix_path(p):
-    """路徑修復：檔案不在原位、但同檔名就在本資料夾 → 自動改用本資料夾那份。
+    """路徑修復：舊位置的 LLM 模型移動後，依檔名尋找 LLM-MODELS。
 
     資料夾搬移/改名之後，設定檔與 models.json 裡的舊路徑不必手改也能用。
     """
@@ -107,8 +129,11 @@ def fix_path(p):
         return p
     if os.path.exists(p):
         return p
-    alt = os.path.join(BASE, os.path.basename(p))
-    return alt if os.path.exists(alt) else p
+    for candidate in (os.path.join(LLM_MODELS, os.path.basename(p)),
+                      os.path.join(BASE, os.path.basename(p))):
+        if os.path.exists(candidate):
+            return candidate
+    return p
 
 
 _ALIAS_CACHE = {}
@@ -121,7 +146,13 @@ _GGUF_CACHE = {}
 
 def gguf_meta(path, want, limit=64):
     """讀 GGUF 開頭的中介資料（只掃前 limit 筆，很快）。找不到回 None。"""
-    ck = (os.path.normcase(os.path.abspath(path)), want)
+    full = os.path.normcase(os.path.abspath(path))
+    try:
+        st = os.stat(path)
+        stamp = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = (-1, -1)
+    ck = (full, stamp, want)
     if ck in _GGUF_CACHE:
         return _GGUF_CACHE[ck]
     val = None
@@ -188,10 +219,10 @@ def gguf_mtp_layers(path):
         return 0
 
 
-# 實測結果（不是猜的）→ 主模型架構：能載它的 runtime 目錄名（空 tuple＝現有 runtime 都載不動）
-#   spark2_5  : 官方 runtime/ 可正常載入並用 GPU
-#   k2-horizon: 實測連官方 runtime/ 也是 unknown model architecture
-RUNTIME_ARCH = {"spark2_5": ("runtime",), "k2-horizon": ()}
+# 本機實測結果（不是猜的）→ 主模型架構：能載它的 runtime 目錄名（空 tuple＝兩套都載不動）
+#   spark2_5  : 官方 runtime/ 可正常載入並用 GPU（Prism v7 會 unknown architecture，已於 2026-09-17 移除）
+#   k2-horizon: 目前實測連官方 runtime/ 也是 unknown model architecture
+RUNTIME_ARCH = {"spark2_5": ("llama-official",), "k2-horizon": ()}
 
 
 def model_alias(path):
@@ -242,13 +273,8 @@ def load_registry():
 
 
 def save_registry(lst):
-    """寫回 models.json（長久儲存）；成功回 True。"""
-    try:
-        with open(REGISTRY, "w", encoding="utf-8") as f:
-            json.dump({"manual": lst}, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    """原子寫回 models.json（長久儲存）；成功回 True。"""
+    return atomic_write_json(REGISTRY, {"manual": lst})
 
 
 def registry_kind(path):
@@ -265,7 +291,7 @@ def looks_like_sidecar(path):
     """粗略判斷某個 .gguf 是否像「外掛小檔」（草稿/投機模型）。
 
     真正的草稿模型通常遠小於完整主模型；這裡用檔案大小當粗略訊號：
-    小於 1 GiB 視為外掛小檔（自帶 mtp 的主模型通常 5 GiB 以上，不會被誤判）。
+    小於 1 GiB 視為外掛小檔（含 mtp 的 9B 主模型約 5 GiB，不會被誤判）。
     """
     try:
         return os.path.getsize(path) < 1 * 2 ** 30
@@ -283,14 +309,14 @@ def list_models():
     """
     out = []
     try:
-        names = sorted(os.listdir(BASE))
+        names = sorted(os.listdir(LLM_MODELS))
     except Exception:
         return out
     for fn in names:
         low = fn.lower()
         if not low.endswith(".gguf"):
             continue
-        p = os.path.join(BASE, fn)
+        p = os.path.join(LLM_MODELS, fn)
         k = registry_kind(p)
         if k == "drafter":
             continue                                  # 記過是草稿 → 不列主模型
@@ -311,7 +337,7 @@ def list_models():
 def first_model_path():
     """本資料夾第一個可用主模型（取代寫死的檔名；沒有就回空字串）。"""
     ms = list_models()
-    return os.path.join(BASE, ms[0][0]) if ms else ""
+    return os.path.join(LLM_MODELS, ms[0][0]) if ms else ""
 
 
 DEFAULT_MODEL = first_model_path()
@@ -326,7 +352,7 @@ def guess_drafter(model_path, extra=None):
         return extra["drafter"], (extra.get("spec") or "draft-mtp")
     low = os.path.basename(model_path).lower()
     try:
-        files = sorted(os.listdir(BASE))
+        files = sorted(os.listdir(LLM_MODELS))
     except Exception:
         files = []
 
@@ -334,7 +360,7 @@ def guess_drafter(model_path, extra=None):
         for fn in files:
             fl = fn.lower()
             if fl.endswith(".gguf") and all(k in fl for k in keys):
-                return os.path.join(BASE, fn)
+                return os.path.join(LLM_MODELS, fn)
         return None
 
     if "bonsai" in low:
@@ -347,10 +373,10 @@ def guess_drafter(model_path, extra=None):
 
 
 def build_model_list():
-    """回傳 [(顯示字串, 完整路徑, 來源, 附加資料)]；來源 = auto（掃描本程式資料夾）/ manual（手動添加）。"""
+    """回傳 [(顯示字串, 完整路徑, 來源, 附加資料)]；來源 = auto（D 槽掃描）/ manual（手動）。"""
     out, seen = [], set()
     for fn, disp, _size in list_models():
-        p = os.path.join(BASE, fn)
+        p = os.path.join(LLM_MODELS, fn)
         out.append((disp, p, "auto", None))
         seen.add(os.path.normcase(p))
     for e in load_registry():
@@ -377,14 +403,14 @@ def list_drafters():
     """
     out = []
     try:
-        names = sorted(os.listdir(BASE))
+        names = sorted(os.listdir(LLM_MODELS))
     except Exception:
         return out
     for fn in names:
         low = fn.lower()
         if not low.endswith(".gguf"):
             continue
-        p = os.path.join(BASE, fn)
+        p = os.path.join(LLM_MODELS, fn)
         k = registry_kind(p)
         if k == "main":
             continue                                  # 記過是主模型 → 不列草稿
@@ -520,7 +546,7 @@ ADV_LOAD = [
 
 ADV_LORA = [
     ("--lora", "lora", "LoRA 適配檔路徑",
-     "可搭配的 LoRA adapter（.gguf）路徑。留空＝不送這個參數。"),
+     "可搭配的 LoRA adapter（.gguf）。範例：OrcaBonsai 的 refusal-direction 消融檔。"),
 ]
 
 ADV_EXTRA = [
@@ -562,12 +588,7 @@ def load_presets():
 
 
 def save_presets(d):
-    try:
-        with open(PRESETS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    return atomic_write_json(PRESETS_FILE, d)
 
 
 def load_settings():
@@ -581,24 +602,22 @@ def load_settings():
 
 
 def save_settings(d):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
+    return atomic_write_json(SETTINGS_FILE, d)
 
 
 proc = None  # type: subprocess.Popen | None
 
-# 本 UI 啟動過的 server PID，程式結束時保底清理（只用 exact PID，絕不用 /IM 影像名）
+# 本 UI 啟動過且仍可能存活的 Popen；退出時只清理仍存活的實際物件。
 _SPAWNED = set()
 
 
 def _cleanup_spawned():
-    for pid in list(_SPAWNED):
-        # 走 _run（有 errors="replace"），避免中文 taskkill 輸出造成 UnicodeDecodeError
-        _run(["taskkill", "/F", "/PID", str(pid)], timeout=15)
+    for child in list(_SPAWNED):
+        try:
+            if child.poll() is None:
+                _run(["taskkill", "/F", "/PID", str(child.pid)], timeout=15)
+        except Exception:
+            pass
     _SPAWNED.clear()
 
 
@@ -762,11 +781,28 @@ class Tip:
             self.tip = None
 
 
+def parse_port(value):
+    """解析 TCP 埠；只接受 1..65535。"""
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"埠必須是 1–65535 的整數：{value}") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"埠超出範圍 1–65535：{value}")
+    return port
+
+
 def port_open(port):
+    try:
+        port = parse_port(port)
+    except ValueError:
+        return False
     s = socket.socket()
     s.settimeout(0.4)
     try:
         return s.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
     finally:
         s.close()
 
@@ -795,8 +831,13 @@ def http_post(path, obj, timeout=5, port=None):
 class App:
     def __init__(self, root):
         self.root = root
+        self._ui_events = queue.Queue()
+        self._closed = False
+        self.active_port = None
+        self._active_lora_path = None
+        self._lora_restart_note = None
         root.title(f"llama-server 控制台 — {BASE}")
-        # 視窗自適應螢幕：小螢幕（工作區小於約 1000x700）寫死 900x700 會把日誌擠出畫面
+        # 視窗自適應螢幕：你的工作區只有 1280x649，寫死 900x700 會把日誌擠出畫面
         _sw, _sh = root.winfo_screenwidth(), root.winfo_screenheight()
         _w = max(760, min(1000, _sw - 120))
         _h = max(460, min(800, _sh - 110))
@@ -837,7 +878,7 @@ class App:
         self.cb_model = ttk.Combobox(row1, textvariable=self.model, width=46, state="readonly",
                                      values=[d for d, _p, _s, _e in self._models])
         self.cb_model.pack(side="left", padx=4, pady=6)
-        Tip(self.cb_model, "要載入的主模型檔。\n自動掃描本程式所在資料夾的 *.gguf，"
+        Tip(self.cb_model, "要載入的主模型檔。\n自動掃描 LLM-MODELS/ 的 *.gguf，"
                            "再加上你手動添加的模型（記在 models.json）。\n"
                            "草稿模型（DF）請用下面那一排選。\n改完要按「■ 停止」再「▶ 啟動」才生效。")
         b_add = ttk.Button(row1, text="➕ 添加模型", command=lambda: self._add_model("main"))
@@ -903,9 +944,9 @@ class App:
                 _sd = getattr(self, "runtime", None)
                 if _sd is not None and os.path.basename(self.server_dir()).lower() not in _allow:
                     if _allow:
-                        _hint = ("只有官方 runtime/ 這套執行檔載得動，請把上面的「執行檔」切過去"
+                        _hint = ("只有 llama-official/ 這套執行檔載得動，請把上面的「執行檔」切過去"
                                  if len(RUNTIMES) > 1 else
-                                 "官方 runtime/ 才載得動（把 runtime/ 放回本資料夾即可）")
+                                 "llama-official/ 才載得動（請確認 RUNTIMES/llama-official/ 存在）")
                     else:
                         _hint = (("目前兩套執行檔都不支援" if len(RUNTIMES) > 1
                                   else "目前這套執行檔不支援") + "，按啟動會直接失敗")
@@ -993,14 +1034,14 @@ class App:
         self.ngl = tk.StringVar(value="all")
         ttk.Combobox(cfg, textvariable=self.ngl, width=10,
                      values=["all", "auto", "999", "64", "48", "32"]).grid(row=2, column=1, sticky="w")
-        ttk.Label(cfg, text="主模型放 GPU 的層數，all = 全部（最快）",
+        ttk.Label(cfg, text="主模型放 GPU 的層數；all／auto = 不指定，由 llama.cpp 依顯存自動決定（填數字＝強制指定）",
                   foreground="#666").grid(row=2, column=2, sticky="w", padx=6)
 
         ttk.Label(cfg, text="-ngld draft 層數").grid(row=3, column=0, sticky="w", padx=6, pady=4)
         self.ngld = tk.StringVar(value="all")
         ttk.Combobox(cfg, textvariable=self.ngld, width=10,
                      values=["all", "auto", "999", "32", "16", "0"]).grid(row=3, column=1, sticky="w")
-        ttk.Label(cfg, text="草稿模型放 GPU 的層數（僅 DSpark 生效）",
+        ttk.Label(cfg, text="草稿模型放 GPU 的層數（僅 DSpark 生效；all／auto = 交給 llama.cpp 自動）",
                   foreground="#666").grid(row=3, column=2, sticky="w", padx=6)
 
         # KV cache 型別（-ctk / -ctv）
@@ -1134,7 +1175,7 @@ class App:
         e_port.grid(row=7, column=1, sticky="w")
         ttk.Label(cfg, text="本地服務埠（網頁／API：http://127.0.0.1:埠/）",
                   foreground="#666").grid(row=7, column=2, sticky="w", padx=6)
-        Tip(e_port, "llama-server 監聽的埠。\n網頁按鈕與 OpenAI 相容用戶端（含各種前端）都用這個埠。\n"
+        Tip(e_port, "llama-server 監聽的埠。\n網頁按鈕與 Hermes 端 custom provider 都用這個埠。\n"
                     "伺服器回報的模型名（--alias）會自動跟著主模型變；\n"
                     "用戶端就算填別的名字也能連（實測 model 欄位不影響）。")
 
@@ -1175,6 +1216,9 @@ class App:
         self._tpl_busy = False
         self._tpl_note = ""
         self._rt_busy = False
+        # 記住「已解析模板狀態」的實際模型路徑。開機先留空，讓 force=True
+        # 也走一次完整模型切換流程，清掉 ui-settings.json 可能殘留的舊模型 LoRA。
+        self._tpl_model_key = ""
         # 切換主模型 → 自動套用綁定/預設模板
         self.model.trace_add("write", self._tpl_on_model_change)
 
@@ -1189,6 +1233,9 @@ class App:
         self.btn_adv.pack(side="left", padx=4)
         self.btn_web = ttk.Button(ctl, text="🌐 開網頁（輕量）", command=self.open_web)
         self.btn_web.pack(side="left", padx=4)
+        self.btn_image = ttk.Button(ctl, text="🎨 Image 模式", command=self.open_image)
+        self.btn_image.pack(side="left", padx=4)
+        Tip(self.btn_image, "獨立啟動生圖控制窗；使用 sd-server，不影響 llama-server。")
         Tip(self.btn_web, "用「獨立小視窗」開啟 llama-server 內建的網頁介面。\n"
                           "做法＝Chromium 的 --app 模式＋獨立 profile＋關擴充功能，\n"
                           "不帶分頁、網址列、擴充功能（實測比日常 Chrome 省約 2 GB）。\n"
@@ -1273,12 +1320,14 @@ class App:
         self._sync_scroll()
 
         self.external_pid = None  # 非本 UI 啟動、但被接管的 server PID
+        self._external_kill_allowed = False
         # 所有輸入框都接上「IME 吞按鍵」的補救（char 為空時依 keysym 補回小數點等）
         bind_numeric_tree(root)
         self._last_num = None      # 最後一個用過的數字欄位（小數點急救鈕靠它，不再跳彈窗）
         self._keydbg = False       # 按鍵偵錯開關
         self._watch_focus(self.root)
         self.refresh_status()
+        self.root.after(100, self._drain_ui_events)
         self.root.after(1500, self._poll)
         self.root.after(300, self._startup_scan)
         # 關閉視窗時自動收掉自己啟動的 server，避免留下孤兒
@@ -1435,7 +1484,7 @@ class App:
         is_df = (kind == "drafter")
         what = "草稿模型（DF）" if is_df else "主模型"
         p = filedialog.askopenfilename(
-            title=f"選擇要加入的 GGUF {what}", initialdir=BASE,
+            title=f"選擇要加入的 GGUF {what}", initialdir=LLM_MODELS,
             filetypes=[("GGUF 模型", "*.gguf"), ("所有檔案", "*.*")])
         if not p:
             return
@@ -1475,18 +1524,18 @@ class App:
                         "不確定是不是草稿模型。\n\n仍要當草稿模型（DF）加入嗎？\n\n"
                         "（選過一次就會記住，下次不再問）"):
                     return
-        if os.path.normcase(os.path.dirname(p)) != os.path.normcase(BASE):
+        if os.path.normcase(os.path.dirname(p)) != os.path.normcase(LLM_MODELS):
             ans = messagebox.askyesnocancel(
                 "要複製到本資料夾嗎？",
                 f"這個檔案不在本資料夾：\n{p}\n\n"
-                f"「是」= 複製一份到 {BASE}（推薦：長久穩定，\n"
+                f"「是」= 複製一份到 {LLM_MODELS}（推薦：長久穩定，\n"
                 "          原檔之後被移動或刪除都不影響）\n"
                 "「否」= 只記錄原路徑（models.json 會記住，但原檔被移動就失效）\n"
                 "「取消」= 不加入")
             if ans is None:
                 return
             if ans:
-                dst = os.path.join(BASE, os.path.basename(p))
+                dst = os.path.join(LLM_MODELS, os.path.basename(p))
                 if os.path.exists(dst):
                     if not messagebox.askyesno(
                             "本資料夾已有同名檔", f"本資料夾已經有：\n{dst}\n\n直接改用這一份？"):
@@ -1502,7 +1551,7 @@ class App:
                     except Exception as e:
                         messagebox.showerror("複製失敗", str(e))
                         return
-        inside = os.path.normcase(os.path.dirname(p)) == os.path.normcase(BASE)
+        inside = os.path.normcase(os.path.dirname(p)) == os.path.normcase(LLM_MODELS)
         # 一律登記「這個檔的分類」＝把使用者的選擇記住（下次不再問、不再被檔名綁架）。
         # 主模型若在本資料夾內本來就會被自動掃描到，但仍登記一次，這樣「分類記憶」才不會丟。
         reg = load_registry()
@@ -1542,7 +1591,7 @@ class App:
                 messagebox.showinfo(
                     "這是自動掃描到的項目",
                     f"{os.path.basename(p)}\n\n"
-                    f"它在 {BASE} 裡面，是自動掃描來的，\n"
+                    f"它在 {LLM_MODELS} 裡面，是自動掃描來的，\n"
                     "不是「手動添加」的項目，所以不能用這裡刪除。\n\n"
                     "要讓它從清單消失，請自行把檔案移出資料夾\n（UI 不會替你刪掉自動掃描到的檔案）。")
             else:
@@ -1561,7 +1610,7 @@ class App:
             kind, target = cand[0] if ans else cand[1]
         else:
             kind, target = cand[0]
-        inside = os.path.normcase(os.path.dirname(os.path.abspath(target))) == os.path.normcase(BASE)
+        inside = os.path.normcase(os.path.dirname(os.path.abspath(target))) == os.path.normcase(LLM_MODELS)
         ans = messagebox.askyesnocancel(
             f"刪除手動添加的{kind}",
             f"{os.path.basename(target)}\n\n"
@@ -1602,8 +1651,9 @@ class App:
         self._refresh_drafters()
 
     def model_path(self):
-        """目前選定的主模型完整路徑（自動掃描與手動添加的都能用；舊路徑會自動修復）。"""
-        return fix_path(self._model_map.get(self.model.get()) or DEFAULT_MODEL)
+        """目前選定的主模型完整路徑；沒有有效選項時明確回空字串。"""
+        path = self._model_map.get(self.model.get())
+        return fix_path(path) if path else ""
 
     def server_dir(self):
         """目前選定的 llama-server 所在目錄（預設＝自動偵測到的第一套）。"""
@@ -1614,8 +1664,11 @@ class App:
         return os.path.join(self.server_dir(), "llama-server.exe")
 
     def build_cmd(self):
-        p = self.port.get()
+        port = parse_port(self.port.get())
+        p = str(port)
         mp = self.model_path()
+        if not mp:
+            raise FileNotFoundError("尚未選擇主模型。")
         if not os.path.exists(mp):
             raise FileNotFoundError(f"找不到模型檔：{mp}")
         cmd = [self.server_exe(), "-m", mp, "--alias", model_alias(mp),
@@ -1655,8 +1708,13 @@ class App:
         rbud = self.rbud.get().strip()
         if rbud:
             cmd += ["--reasoning-budget", rbud]
+        # -ngl：all / auto（＝UI 預設值）→ 不送旗標，交給 llama.cpp 自己決定。
+        #   這版預設就是 auto，會配合 --fit 依「實際可用顯存」自動算層數。
+        #   實測：明確送 -ngl all 會讓 --fit 拒絕調整
+        #   （log：failed to fit params to free device memory: n_gpu_layers already set
+        #    by user, abort），顯存不夠時就沒得救。填數字仍照送＝明確指定。
         ngl = self.ngl.get().strip()
-        if ngl:
+        if ngl and ngl.lower() not in ("all", "auto"):
             cmd += ["-ngl", ngl]
         # Jinja 聊天模板（本 build 預設已開；取消勾選＝明確關閉）
         cmd += ["--jinja"] if self.jinja.get() else ["--no-jinja"]
@@ -1670,12 +1728,12 @@ class App:
             self._forced_fa = True
         if fa_on:
             cmd += ["-fa", "on"]
-        # ctx > 32768 在小 VRAM 顯卡上放不下 KV，強制把 KV 放到系統 RAM
-        try:
-            big = int(self.ctx.get()) > 32768
-        except Exception:
-            big = False
-        if self.nkvo.get() or big:
+        # KV 放哪裡＝完全尊重勾選，不再依 ctx 大小偷偷強制。
+        # （舊寫法：ctx > 32768 就自動補 -nkvo，沒勾也照送、而且一句提示都沒有。
+        #   實測本機 llama.cpp build 11002 預設 --fit on 會先算顯存再決定，
+        #   KV 也放得進顯存（4B/SWA 模型 ctx 65536 → KV 僅 648 MiB），
+        #   硬編門檻既過度保守、又讓 UI 顯示與實際指令對不上。）
+        if self.nkvo.get():
             cmd += ["-nkvo"]
 
         mode = self.mode.get()
@@ -1714,8 +1772,9 @@ class App:
                         _v = self.adv[_r[1]].get().strip()
                         if _v:
                             cmd += [_r[0], _v]
+                    # 同上：all / auto 不送，讓 llama.cpp 自己依顯存算層數
                     ngld = self.ngld.get().strip()
-                    if ngld:
+                    if ngld and ngld.lower() not in ("all", "auto"):
                         cmd += ["-ngld", ngld]
                     self._spec_note = f"[投機] DF：{os.path.basename(dr)}（--spec-type {spec}）\n"
                 elif dr:
@@ -1763,6 +1822,13 @@ class App:
                 return c
         return ""
 
+    def open_image(self):
+        """Open an independent image controller; llama-server remains untouched."""
+        try:
+            subprocess.Popen([sys.executable, os.path.join(BASE, "image-ui.py")], cwd=BASE)
+        except OSError as exc:
+            messagebox.showerror("Image 模式", str(exc))
+
     def open_web(self):
         """開 llama-server 網頁介面。
         【輕量模式】用 Chromium 的 --app 開「單一視窗」＋獨立 profile＋關擴充功能。
@@ -1771,9 +1837,9 @@ class App:
         找不到 Chromium 時退回系統預設瀏覽器。"""
         raw = self.port.get().strip()
         try:
-            port = int(raw)
-        except Exception:
-            messagebox.showerror("設定錯誤", f"埠必須是數字：{raw}")
+            port = parse_port(raw)
+        except ValueError as e:
+            messagebox.showerror("設定錯誤", str(e))
             return
         url = f"http://127.0.0.1:{port}/"
         if not port_open(port):
@@ -1812,9 +1878,9 @@ class App:
             messagebox.showinfo("已執行", "server 已在執行中。")
             return
         try:
-            port = int(self.port.get())
-        except Exception:
-            messagebox.showerror("設定錯誤", "埠必須是數字。")
+            port = parse_port(self.port.get())
+        except ValueError as e:
+            messagebox.showerror("設定錯誤", str(e))
             return
         # 每次啟動都強制執行重複檢查（埠佔用 / 殘留程序）
         if not self._preflight(port):
@@ -1835,9 +1901,35 @@ class App:
                         "實測：不相容的 DF 不會友善報錯，會讓 llama-server 直接崩潰。\n\n"
                         "仍要啟動嗎？（建議改用「自動（依主模型配對）」）"):
                     return
+        # LoRA 與目前模型／執行環境對不上時先警告（可一鍵清空；要照原樣啟動也行）
+        _lora_note = self._lora_mismatch_note()
+        if _lora_note:
+            self._log("[LoRA] ⚠ " + _lora_note.splitlines()[0] + "\n")
+            if messagebox.askyesno(
+                    "LoRA 可能不適用",
+                    f"{os.path.basename(self.adv['lora'].get().strip())}\n\n{_lora_note}\n\n"
+                    "要清空 LoRA 欄位（含強度）再啟動嗎？\n（選「否」＝照原樣啟動）"):
+                self.adv["lora"].set("")
+                self.adv["lora_scale"].set("")
+                self._lora_applied = None
+                cmd = self.build_cmd()
+                self._log("[LoRA] 已清空 LoRA 設定，改用重新建好的指令啟動\n")
         self._log("$ " + " ".join(cmd) + "\n")
         if getattr(self, "_forced_fa", False):
             self._log("[注意] V cache 量化需要 Flash-Attn，已自動補上 -fa on\n")
+        # KV 去哪裡＝講清楚（只提示，不改變行為）：ctx 大又沒勾 -nkvo 時，
+        # KV 會盡量留顯存，真的塞不下再由 llama.cpp 自己降級。
+        if not self.nkvo.get():
+            try:
+                if int(self.ctx.get()) > 32768:
+                    self._log("[KV] 未勾 -nkvo（ctx %s）：KV 會盡量留在顯存；"
+                              "塞不下時由 llama.cpp 自行降級（見下方啟動訊息）。\n" % self.ctx.get())
+            except Exception:
+                pass
+        # GPU 層數未指定時講清楚（只提示，不改變行為）
+        if self.ngl.get().strip().lower() in ("all", "auto", ""):
+            self._log("[GPU] 未指定 -ngl → 由 llama.cpp 依實際可用顯存自動分配層數"
+                      "（啟動訊息會印 fitting params …）\n")
         if getattr(self, "_spec_note", ""):
             self._log(self._spec_note)
         try:
@@ -1848,7 +1940,16 @@ class App:
             messagebox.showerror("啟動失敗", str(e))
             return
         threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
-        _SPAWNED.add(proc.pid)
+        _SPAWNED.add(proc)
+        self.active_port = port
+        _launch_lora = self.adv["lora"].get().strip()
+        self._active_lora_path = os.path.normcase(os.path.abspath(_launch_lora)) if _launch_lora else ""
+        self._lora_restart_note = None
+        # ★ 新 server 是全新行程：LoRA 強度送不進命令列（本 UI 只送 --lora 路徑，
+        #   scale 靠啟動後 POST /lora-adapters），所以必須清掉「已套用」快取，
+        #   否則同一個 lora+scale 重啟後不會重套 → 強度靜默變回 llama.cpp 預設 1.0。
+        self._lora_applied = None
+        self._lora_try_ts = 0
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.lbl.config(text="狀態：啟動中…", foreground="#b80")
@@ -1862,44 +1963,88 @@ class App:
                 proc.wait(timeout=8)
             except Exception:
                 kill_pid(proc.pid, self._log)
-            _SPAWNED.discard(proc.pid)
+            _SPAWNED.discard(proc)
         elif getattr(self, "external_pid", None):
-            if messagebox.askyesno(
-                    "外部 server",
-                    f"目前接管的是外部啟動的 server（PID {self.external_pid}）。\n要終止它嗎？"):
-                kill_pid(self.external_pid, self._log)
+            if getattr(self, "_external_kill_allowed", False):
+                if messagebox.askyesno(
+                        "外部 server",
+                        f"目前接管的是已驗證的外部 llama-server（PID {self.external_pid}）。\n要終止它嗎？"):
+                    kill_pid(self.external_pid, self._log)
+            else:
+                self._log(f"[停止] 已解除接管 PID {self.external_pid}；程序身分未驗證，因此未終止\n")
         proc = None
         self.external_pid = None
+        self._external_kill_allowed = False
+        self.active_port = None
+        self._active_lora_path = None
+        self._lora_restart_note = None
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
         self.lbl.config(text="狀態：已停止", foreground="#b00")
 
     def _reader(self, p):
-        for line in p.stdout:
-            self._log(line.decode("utf-8", "replace"))
-        self._log("[程序結束]\n")
+        try:
+            for line in p.stdout:
+                self._log(line.decode("utf-8", "replace"))
+        finally:
+            self._log("[程序結束]\n")
+            events = getattr(self, "_ui_events", None)
+            if events is not None:
+                events.put(("process_exit", p))
 
     def _log(self, s):
-        # 日誌讀取是在背景執行緒跑；視窗若已關閉（widget 沒了）就安靜結束，不要丟例外
+        """任何執行緒都可呼叫；實際 Tk 寫入只在主執行緒的 drain 執行。"""
+        events = getattr(self, "_ui_events", None)
+        if events is not None:
+            events.put(("log", str(s)))
+
+    def _drain_ui_events(self):
+        global proc
+        if getattr(self, "_closed", False):
+            return
         try:
-            self.log.insert("end", s)
-            self.log.see("end")
-        except Exception:
+            while True:
+                kind, payload = self._ui_events.get_nowait()
+                if kind == "log":
+                    self.log.insert("end", payload)
+                    self.log.see("end")
+                elif kind == "process_exit":
+                    child = payload
+                    _SPAWNED.discard(child)
+                    if proc is child:
+                        proc = None
+                        self.active_port = None
+                        self._active_lora_path = None
+                        self._lora_restart_note = None
+                        self.btn_start.config(state="normal")
+                        self.btn_stop.config(state="disabled")
+                        self.lbl.config(text=f"狀態：程序已結束（exit={child.poll()}）", foreground="#b00")
+        except queue.Empty:
             pass
+        except (tk.TclError, RuntimeError):
+            return
+        self.root.after(100, self._drain_ui_events)
 
     # ---------- 狀態輪詢 ----------
     def _poll(self):
         alive = proc and proc.poll() is None
-        try:
-            p = int(self.port.get())
-        except Exception:
-            p = PORT
+        p = self.active_port
+        if p is None:
+            try:
+                p = parse_port(self.port.get())
+            except ValueError:
+                self.lbl.config(text="狀態：埠設定無效（請輸入 1–65535）", foreground="#b00")
+                self.root.after(2000, self._poll)
+                return
         if port_open(p):
             info = http_get("/props", timeout=2, port=p)
-            model = os.path.basename(info.get("model_path", "") or "")[:40]
-            nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
-            self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
-            self._apply_lora_scale(p)
+            if isinstance(info, dict) and not info.get("_err"):
+                model = os.path.basename(info.get("model_path", "") or "")[:40]
+                nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
+                self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
+                self._apply_lora_scale(p)
+            else:
+                self.lbl.config(text=f"狀態：port={p} 有服務，但不是可辨識的 llama-server", foreground="#b80")
         elif alive:
             self.lbl.config(text="狀態：啟動中（載入模型）…", foreground="#b80")
         else:
@@ -1912,6 +2057,14 @@ class App:
         try:
             lora = self.adv["lora"].get().strip()
             if not lora:
+                return
+            configured = os.path.normcase(os.path.abspath(lora))
+            launched = getattr(self, "_active_lora_path", None)
+            if launched != configured:
+                note = (launched, configured)
+                if getattr(self, "_lora_restart_note", None) != note:
+                    self._lora_restart_note = note
+                    self._log("[LoRA] LoRA 路徑已在 server 啟動後變更；為避免把強度套到舊 adapter，請停止後重新啟動\n")
                 return
             _raw = self.adv["lora_scale"].get().strip()
             try:
@@ -1931,11 +2084,45 @@ class App:
                 self._log(f"[LoRA] 套用強度 {scale} 失敗：{r['_err']}\n")
                 return
             cur = http_get("/lora-adapters", timeout=3, port=port)
-            got = cur[0].get("scale") if isinstance(cur, list) and cur else "?"
+            got = cur[0].get("scale") if isinstance(cur, list) and cur and isinstance(cur[0], dict) else None
+            try:
+                confirmed = abs(float(got) - scale) <= 1e-6
+            except (TypeError, ValueError):
+                confirmed = False
+            if not confirmed:
+                self._log(f"[LoRA] server 未確認強度 {scale}（回傳 scale={got!r}），稍後重試\n")
+                return
             self._lora_applied = want
-            self._log(f"[LoRA] 已套用強度 scale={got}（{os.path.basename(lora)}）\n")
+            self._log(f"[LoRA] 已確認套用強度 scale={got}（{os.path.basename(lora)}）\n")
         except Exception as e:
             self._log(f"[LoRA] 套用強度例外：{e}\n")
+
+    def _lora_mismatch_note(self):
+        """LoRA 檔若位於「別的執行環境」目錄底下（或檔案不存在）→ 回傳警告文字，否則 ""。
+
+        為什麼要檢查：LoRA 是綁在特定基底模型上的，換了模型卻還掛著舊 LoRA，
+        輕則完全無效（表面照跑，實際沒套用），重則載入報錯。
+        """
+        try:
+            lora = self.adv["lora"].get().strip()
+        except Exception:
+            return ""
+        if not lora:
+            return ""
+        lp = os.path.normcase(os.path.abspath(lora))
+        cur = os.path.normcase(os.path.abspath(self.server_dir() or ""))
+        for n, d in RUNTIMES:
+            dp = os.path.normcase(os.path.abspath(d or ""))
+            if not dp or dp == cur:
+                continue
+            if lp.startswith(dp + os.sep):
+                return (f"這個 LoRA 檔位於「{n}」的執行環境目錄底下，"
+                        f"但目前選的執行環境是「{self.runtime.get()}」。\n"
+                        "LoRA 是綁在特定基底模型上的：基底不符會載入報錯，"
+                        "或看起來有載入卻完全沒效果。")
+        if not os.path.exists(lora):
+            return f"找不到這個 LoRA 檔：{lora}"
+        return ""
 
     def _insert_dot(self):
         """小數點急救鈕：把「.」補進最後一個用過的數字欄位（含進階設定視窗裡的欄位）。
@@ -1990,7 +2177,7 @@ class App:
             self._log("[按鍵偵錯] 已開啟：請用滑鼠點一下要測的欄位，再按那個按不出來的鍵"
                       "（例如數字鍵盤的 .）\n"
                       "            每顆鍵都會記一行 keysym / keycode / char，"
-                      "按完把這幾行貼到 issue／討論串就能對症下藥\n")
+                      "按完把這幾行貼給我就能對症下藥\n")
             self._enable_keydbg(self.root)
         else:
             self._log("[按鍵偵錯] 已關閉\n")
@@ -2081,10 +2268,20 @@ class App:
         if isinstance(rt, str) and rt in [n for n, _d in RUNTIMES]:
             self.runtime.set(rt)
         adv = tpl.get("adv")
-        if isinstance(adv, dict):
-            for k, var in self.adv.items():
-                if isinstance(adv.get(k), str):
-                    var.set(adv[k])
+        # 模板＝完整快照；舊模板缺少 adv 時也視為空快照，不能繼承前一模板。
+        if not isinstance(adv, dict):
+            adv = {}
+        for k, var in self.adv.items():
+            var.set(adv[k] if isinstance(adv.get(k), str) else "")
+
+    def _clear_lora_state(self):
+        """清除模板／模型專屬 LoRA，以及執行中套用狀態快取。"""
+        for key in ("lora", "lora_scale"):
+            var = self.adv.get(key)
+            if var is not None:
+                var.set("")
+        self._lora_applied = None
+        self._lora_try_ts = 0
 
     _TPL_NONE = "（不使用模板）"
     _TPL_DEFAULT = "（預設模板）"
@@ -2140,7 +2337,13 @@ class App:
             return
         name = self.tpl.get()
         if name in ("", self._TPL_NONE):
+            self._tpl_busy = True
+            try:
+                self._clear_lora_state()
+            finally:
+                self._tpl_busy = False
             self._tpl_note = ""
+            self._log("[模板] 已停用模板並清除模板 LoRA\n")
             return
         tpl = self._presets["templates"].get(name)
         if not isinstance(tpl, dict):
@@ -2200,6 +2403,17 @@ class App:
         mp = self.model_path()
         if not mp:
             return
+        model_key = os.path.normcase(os.path.abspath(mp))
+        model_changed = model_key != getattr(self, "_tpl_model_key", "")
+        if model_changed:
+            # LoRA 是基底模型專屬資產：模型真的換了時先清掉來源模型的 LoRA，
+            # 再由目的模型的綁定/預設模板恢復自己的值。僅重掃同一路徑不會誤清。
+            self._tpl_busy = True
+            try:
+                self._clear_lora_state()
+            finally:
+                self._tpl_busy = False
+            self._tpl_model_key = model_key
         name = self._presets["bind"].get(os.path.normcase(mp))
         if not name:
             name = self._presets["bind"].get(os.path.basename(mp))
@@ -2216,7 +2430,7 @@ class App:
             self._log(f"[模板] 切換模型 → 自動套用{src}「{name}」\n")
         else:
             # 沒綁模板 → 至少把「這顆模型上次用的執行檔」還原回來，
-            # 否則會沿用上一顆模型的執行檔（例如切回 A 模型卻還在用 B 模型的 runtime）。
+            # 否則會沿用上一顆模型的執行檔（例如切回 gemma 卻還在用 Bonsai/）。
             self._tpl_busy = True
             self.tpl.set(self._TPL_NONE)
             self._tpl_busy = False
@@ -2291,6 +2505,8 @@ class App:
         if save_presets(self._presets):
             self._log(f"[模板] 已解除綁定：{os.path.basename(mp)}\n")
             self._tpl_note = ""
+            self._tpl_model_key = ""  # 立即重新解析：套預設模板，或清除原模板 LoRA
+            self._tpl_on_model_change()
             if self._sync_model_fn:
                 self._sync_model_fn()
 
@@ -2321,6 +2537,8 @@ class App:
         if save_presets(self._presets):
             self._log(f"[模板] 已刪除模板「{name}」\n")
             self._tpl_refresh_ui()
+            self._tpl_model_key = ""  # 若目前模型剛失去此模板，立刻清除／改套預設
+            self._tpl_on_model_change()
 
     def _apply_settings(self, d):
         for var, key in ((self.mode, "mode"), (self.ctx, "ctx"), (self.ngl, "ngl"),
@@ -2422,8 +2640,8 @@ class App:
     def _startup_scan(self):
         """UI 一開就靜默掃一次，先把重複狀況寫進日誌（不打擾使用者）。"""
         try:
-            p = int(self.port.get())
-        except Exception:
+            p = parse_port(self.port.get())
+        except ValueError:
             p = PORT
         busy = pids_listening_on(p)
         servers = find_llama_servers()
@@ -2450,13 +2668,34 @@ class App:
 
         if busy:
             detail = []
+            unknown = []
             for p in sorted(busy):
                 cl = servers.get(p)
                 if cl:
                     detail.append(f"  • PID {p}（llama-server）\n    {cl[:220]}")
                 else:
-                    detail.append(f"  • PID {p}（非 llama-server，可能是別的程式）")
+                    unknown.append(p)
+                    detail.append(f"  • PID {p}（無法確認為 llama-server）")
             self._log(f"[預檢] 埠 {port} 已被佔用：PID {sorted(busy)}\n")
+            if unknown:
+                health = http_get("/props", timeout=2, port=port)
+                if not isinstance(health, dict) or health.get("_err"):
+                    messagebox.showerror(
+                        "埠由其他程式佔用",
+                        f"連接埠 {port} 由 PID {unknown} 使用，但無法確認是 llama-server。\n\n"
+                        "為避免誤殺其他程式，本工具不會接管或終止它。請改用其他埠。")
+                    return False
+                if messagebox.askyesno(
+                        "接管現有 llama-server",
+                        f"連接埠 {port} 回應 llama-server API，但無法驗證程序身分。\n\n"
+                        "只允許安全接管，不會提供終止重啟。要接管嗎？"):
+                    self.external_pid = sorted(busy)[0]
+                    self._external_kill_allowed = False
+                    self.active_port = port
+                    self.btn_start.config(state="disabled")
+                    self.btn_stop.config(state="normal")
+                    self.lbl.config(text=f"狀態：外部 server  PID {self.external_pid}", foreground="#080")
+                return False
             ans = messagebox.askyesnocancel(
                 "埠已被佔用",
                 f"連接埠 {port} 已被佔用：\n\n" + "\n".join(detail) + "\n\n"
@@ -2468,13 +2707,21 @@ class App:
                 return False
             if ans:
                 self.external_pid = sorted(busy)[0]
+                self._external_kill_allowed = True
+                self.active_port = port
+                self.btn_start.config(state="disabled")
+                self.btn_stop.config(state="normal")
                 self._log(f"[預檢] 接管既有 server（PID {self.external_pid}），不重新啟動\n")
                 self.lbl.config(text=f"狀態：外部 server  PID {self.external_pid}", foreground="#080")
                 return False
             self.external_pid = None
             for p in sorted(busy):
-                kill_pid(p, self._log)
-            wait_port_free(port, log=self._log)
+                if not kill_pid(p, self._log):
+                    messagebox.showerror("終止失敗", f"無法終止 llama-server PID {p}，已取消啟動。")
+                    return False
+            if not wait_port_free(port, log=self._log):
+                messagebox.showerror("埠仍被佔用", f"連接埠 {port} 尚未釋放，已取消啟動。")
+                return False
 
         # 殘留：來自本專案目錄、但不在本埠的 llama-server
         leftovers = [(p, c) for p, c in servers.items()
@@ -2513,14 +2760,17 @@ class App:
                 pass
             if proc.poll() is None:
                 kill_pid(proc.pid, self._log)
-            _SPAWNED.discard(proc.pid)
+            _SPAWNED.discard(proc)
             proc = None
         elif getattr(self, "external_pid", None):
-            if messagebox.askyesno(
-                    "外部 server",
-                    f"目前接管的是外部啟動的 server（PID {self.external_pid}）。\n要一起關閉嗎？"):
-                kill_pid(self.external_pid, self._log)
+            if getattr(self, "_external_kill_allowed", False):
+                if messagebox.askyesno(
+                        "外部 server",
+                        f"目前接管的是已驗證的外部 llama-server（PID {self.external_pid}）。\n要一起關閉嗎？"):
+                    kill_pid(self.external_pid, self._log)
             self.external_pid = None
+            self._external_kill_allowed = False
+        self._closed = True
         self.root.destroy()
 
     # ---------- 進階取樣設定視窗 ----------
@@ -2629,7 +2879,7 @@ class App:
                    "留空 = 用 llama.cpp 預設 1.0。\n"
                    "官方建議：0＝原始模型（對照組）、1＝精確投影、2＝連頑固題材也翻、3+＝開始崩壞。\n"
                    "★ 本 UI 用啟動後 POST /lora-adapters 套用，"
-                   "因為 --lora-scaled 的 FNAME:SCALE 在 Windows 會與磁碟機代號（如 C:）衝突而報錯。")
+                   "因為 --lora-scaled 的 FNAME:SCALE 在 Windows 會與『D:』衝突而報錯。")
         Tip(_e_lora, "旗標：--lora FNAME\n"
                      "LoRA 適配檔的完整路徑（.gguf）。\n"
                      "要用不同強度時 llama.cpp 另有 --lora-scaled FNAME:SCALE（本 UI 暫不支援）。\n"
@@ -2639,7 +2889,7 @@ class App:
         ttk.Label(t8, text=("直接附加到 llama-server 啟動指令的「最後面」。\n"
                             "留空＝不附加。格式與你在命令列打的一樣，會用空白拆成多個參數；\n"
                             "路徑含空白時用雙引號包起來，例如：\n"
-                            '    --lora-scaled "C:\\models\\lora.gguf:1.5" --no-mmap'),
+                            '    --lora-scaled "D:\\my loras\\x.gguf:1.5" --no-mmap'),
                   foreground="#666", wraplength=620, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 4))
         ttk.Label(t8, text="自訂參數").grid(row=1, column=0, sticky="w", padx=6, pady=(3, 3))

@@ -1,34 +1,47 @@
-# ---- Models and runtime binaries are NOT part of this repo (too large) ----
-*.gguf
-gguf/
-runtime/
-*-runtime/
-
-# ---- Auto-generated at runtime (machine-specific absolute paths inside) ----
-ui-settings.json
-models.json
-presets.json
-tools/_webview_profile/
-
-# ---- Logs and caches ----
+# Runtime data (may contain prompts, personal paths, keys or browser history)
+/image-settings.json
+/ui-settings.json
+/models.json
+/presets.json
+/image-output/
+/logs/
+/tools/backups/
+/tools/_*profile/
+/.env
+.env.*
 *.log
-__pycache__/
-*.pyc
-*.pyo
-
-# ---- Dev backups / half-finished downloads / scratch ----
+*.sqlite
+*.db
 *.bak
-*.bak-*
-tools/backups/
-*.crdownload
-*.part
-*.parts/
 *.tmp
-*.swp
+*.part
+*.crdownload
+__pycache__/
+*.py[cod]
 
-# ---- Editor / OS junk ----
+# Weights / binaries: download from original publishers; never commit
+/IMAGE-MODELS/
+/LLM-MODELS/
+/RUNTIMES/
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+*.zip
+*.exe
+*.dll
+
+# Scratch, backups and test artifacts
+/hermes-files/
+/.pytest_cache/
+/.vscode/
+/.idea/
 .DS_Store
 Thumbs.db
-desktop.ini
-.idea/
-.vscode/

@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GGUFRun｜生圖與圖生圖</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,"Microsoft JhengHei",sans-serif;background:#0b1220;color:#edf3ff}*{box-sizing:border-box}
+body{margin:0}.shell{max-width:1600px;margin:auto;padding:22px 20px 60px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #33445c;padding-bottom:18px}
+h1{font-size:28px;margin:0}.sub{color:#aebfd3;margin:7px 0 0}.chip{color:#a6f0cf;background:#143b35;border:1px solid #287b68;border-radius:24px;padding:8px 13px;font-size:13px}
+.grid{display:grid;grid-template-columns:minmax(340px,440px) minmax(530px,1fr);gap:18px;margin-top:20px}section,aside{background:#142136;border:1px solid #2a415d;border-radius:16px;padding:18px}h2{font-size:20px;margin:0 0 14px}h3{font-size:16px;margin:0 0 8px}
+label{display:block;font-size:14px;color:#bcd0e7;margin:15px 0 7px}textarea,input,select{width:100%;background:#0b192d;color:#f0f6ff;border:1px solid #426080;border-radius:9px;padding:11px 12px;font:inherit}textarea{height:132px;resize:vertical}input:focus,textarea:focus,select:focus{outline:2px solid #51a5f0}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:0 14px}
+button,.download{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:10px;padding:12px 18px;font:inherit;font-weight:650;cursor:pointer;text-decoration:none;color:#071726;background:#6bc6f0}button:hover,.download:hover{background:#a2dcf8}button:disabled{opacity:.5;cursor:wait}.action{width:100%;margin-top:20px}small,.help{color:#9fb5cc;line-height:1.7}.help{font-size:14px;margin:8px 0}.preview{min-height:min(69vh,720px);border:1px dashed #47617c;border-radius:12px;display:grid;place-items:center;background:#0a1628;overflow:hidden;color:#97aac2;text-align:center}.preview img{display:block;max-width:100%;max-height:69vh;object-fit:contain}.result{margin-top:7px;overflow-wrap:anywhere}#status{min-height:26px;white-space:pre-wrap;overflow-wrap:anywhere;margin:9px 0;color:#a6d5f3}#elapsed{font-weight:700;color:#8ed6f4;margin:10px 0}.guide{margin-top:22px}.guidegrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.guidegrid article{background:#0c192b;padding:15px;border-radius:11px}.guidegrid p{font-size:14px;color:#aebed3;line-height:1.7;margin:0}
+.info{position:relative;display:inline-block;vertical-align:middle;margin-left:6px}.info .hint{width:22px;height:22px;padding:0;border:1px solid #67bbeb;border-radius:50%;background:#224466;color:#dcf3ff;font-size:13px}.hinttext{display:none;position:absolute;z-index:20;bottom:calc(100% + 7px);left:0;width:min(340px,85vw);background:#193551;color:#f2f7ff;border:1px solid #64a6d3;box-shadow:0 8px 24px #0009;border-radius:9px;padding:12px;line-height:1.55;font-size:13px;font-weight:400}.info:hover .hinttext,.info:focus-within .hinttext{display:block}
+input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;margin-right:7px}select:disabled{opacity:.55;cursor:wait}input:disabled{opacity:.55;cursor:not-allowed}summary{cursor:pointer;color:#bcd0e7;font-size:14px;margin:15px 0 7px}summary:hover{color:#f0f6ff}details[open] summary{margin-bottom:10px}
+.queue-actions{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.queue-actions button{flex:1}.tasklist{list-style:none;padding:0;margin:12px 0;max-height:460px;overflow:auto}.tasklist li{border:1px solid #344f6b;border-radius:9px;padding:12px;margin:9px 0;overflow-wrap:anywhere}.task-head{display:flex;justify-content:space-between;gap:8px}.task-buttons{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}.task-buttons button,.queue-actions .secondary{background:#284766;color:#e8f3ff;padding:6px 10px;font-size:13px}.task-buttons button:hover,.queue-actions .secondary:hover{background:#3a668a}.task-summary{color:#9fb5cc;font-size:13px;line-height:1.5}.task-error{color:#ffc6b4}#bulk{height:92px}.task-refs{display:flex;flex-wrap:wrap;gap:9px;margin:9px 0}.task-ref{display:grid;gap:3px;font-size:12px;color:#bcd0e7}.task-ref img{width:76px;height:76px;object-fit:cover;border:1px solid #426080;border-radius:6px}.source-preview{max-width:100%;max-height:210px;object-fit:contain;border-radius:8px;margin:8px 0;display:block}.source-preview[hidden],.source-fields[hidden],#hires-fields[hidden],#edit-references[hidden],#source-single[hidden]{display:none}.edit-list{display:grid;gap:7px;margin:10px 0}.edit-item{display:flex;align-items:center;gap:10px;background:#0b192d;border:1px solid #426080;border-radius:9px;padding:7px}.edit-item img{width:56px;height:56px;object-fit:cover;border-radius:5px}.edit-item span{flex:1;overflow-wrap:anywhere}.edit-item button,#clear-edit{background:#284766;color:#e8f3ff;padding:7px 11px;font-size:13px}
+@media(max-width:990px){.grid{grid-template-columns:1fr}.guidegrid{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body><main class="shell">
+<header><div><h1>GGUFRun · 生圖</h1><p class="sub">本機 stable-diffusion.cpp｜繁體中文操作頁</p></div><span id="model" class="chip">正在查詢已載入模型…</span></header>
+<div class="grid"><section><h2>建立圖片</h2>
+<form id="form"><label for="mode">生成模式</label><select id="mode"><option value="txt2img">文字生圖（不載入 mmproj）</option><option value="img2img">Img2Img（整張去噪重畫，不載入 mmproj）</option><option value="qwen_edit">Qwen Edit（參考圖指令修圖，按需載入 mmproj）</option></select><p class="help">離開 Qwen Edit、選擇「文字生圖」或「Img2Img」，就會重啟 Image Server 並卸載 mmproj；沒有另一個卸載步驟。任務生成中不可切換。請勿在其他分頁或外部 API 並行送出任務。待辦佇列和已存圖不會刪除。</p>
+<div id="source-fields" class="source-fields" hidden><div id="source-single"><label for="source-file">上傳原圖（PNG／JPEG，最多 10 MB）</label><input id="source-file" type="file" accept="image/png,image/jpeg"><img id="source-preview" class="source-preview" alt="原圖預覽" hidden></div><div id="edit-references" hidden><label for="edit-files">Qwen Edit 參考圖（可分次加入，依顯示順序送出，最多 10 張）</label><input id="edit-files" type="file" accept="image/png,image/jpeg" multiple><div id="edit-list" class="edit-list"></div><button id="clear-edit" type="button" class="secondary">清空參考圖</button><p class="help">每張都可個別移除，用 ↑↓ 調整參考圖順序；選錯圖不會送出。待辦任務另會顯示已排入的參考圖預覽。更多參考圖可能增加記憶體需求。</p></div><p id="source-info" class="help">原圖暫存在此瀏覽器，供佇列重開後使用；不會複製到 image-output。改選原圖不會改動已加入的任務。</p><div id="denoise-fields"><label for="denoising-strength">改動強度（Denoising strength） <span class="info"><button class="hint" type="button" aria-label="說明：denoising-strength">?</button><span class="hinttext" role="tooltip">0 越接近原圖，1 改動越大。建議先用 0.5～0.7 試；這是傳統圖生圖的去噪強度，不等於 Qwen 官方參考圖編輯的指令強度。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</span></span></label><input id="denoising-strength" type="number" min="0.01" max="1" step="0.01" value="0.65"><div id="mask-fields"><label for="mask-file">局部重畫遮罩（選填；PNG，白色改、黑色保留）</label><input id="mask-file" type="file" accept="image/png"><p class="help">遮罩需與原圖相同像素尺寸；留空就是普通去噪圖生圖。Qwen Edit 不使用遮罩。</p></div><p class="help">普通去噪圖生圖可不填描述；本版 sd-server 要求非空 prompt，留空時將送出中性文字 <code>the same image</code>（不是 Qwen 修改指令）。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</p></div><p id="edit-help" class="help" hidden>Qwen Edit：參考圖由視覺編碼器理解後依指令編輯；不使用去噪強度。提示詞請描述要改什麼（例如「只把裙子改成黑色」）。不是像素級保證，背景仍可能變化。</p></div>
+<label for="prompt">畫面描述（Prompt） <span class="info"><button class="hint" type="button" aria-label="說明：prompt">?</button><span class="hinttext" role="tooltip">寫出你希望畫面包含的主體、場景、光線、風格與構圖。例如「白桌上一顆紅蘋果，窗邊自然光，寫實攝影」。模型對語言的理解不盡相同；加入佇列時會保存這段文字，不會因之後改輸入框而變動。</span></span></label><textarea id="prompt" placeholder="例如：白色桌上的一顆紅蘋果，自然窗光，寫實攝影" required></textarea>
+<label for="negative">不希望出現的內容（選填） <span class="info"><button class="hint" type="button" aria-label="說明：negative">?</button><span class="hinttext" role="tooltip">負面描述，告訴模型盡量避免哪些畫面元素，例如模糊或文字。不是所有模型都以相同方式支援；不確定時先留空。它不會刪除已生成圖片中的東西。</span></span></label><input id="negative" placeholder="依模型而異；不需要可留空">
+<div class="fields"><div><label for="width">寬度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：width">?</button><span class="hinttext" role="tooltip">輸出圖片的水平像素數；高解析度會大量增加顯存與時間，8 GB 顯卡建議先以 512×512 測試。</span></span></label><input id="width" type="number" min="64" max="4096" step="32" value="512" required></div><div><label for="height">高度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：height">?</button><span class="hinttext" role="tooltip">輸出圖片的垂直像素數；自訂尺寸請使用 32 的倍數。</span></span></label><input id="height" type="number" min="64" max="4096" step="32" value="1024" required></div></div>
+<label for="size-preset">常用尺寸 <span class="info"><button class="hint" type="button" aria-label="說明：size-preset">?</button><span class="hinttext" role="tooltip">預設直式 512×1024，另有橫式 1024×512、方形 512×512 與 16:9 尺寸。選取後填入寬高，寬高均為 32 倍數；標示「約」的影片規格並非精確 16:9，仍可手動修改；2K、4K 不保證 8 GB 顯卡能完成。</span></span></label><select id="size-preset"><option value="512x1024" selected>512×1024（直式，預設）</option><option value="1024x512">1024×512（橫式）</option><option value="512x512">512×512（方形）</option><option value="640x384">約 360p · 640×384</option><option value="864x480">約 480p · 864×480</option><option value="1280x736">約 720p · 1280×736</option><option value="1920x1088">約 1080p · 1920×1088</option><option value="2560x1440">2K · 2560×1440（高顯存）</option><option value="3840x2176">約 4K · 3840×2176（極高顯存）</option><option value="custom">自訂尺寸</option></select><p id="size-warning" class="help"></p>
+<details id="hires-fields"><summary>進階設定：Hi-res 高解析度（僅文字生圖）</summary><label><input id="enable-hr" type="checkbox"> 啟用 Hi-res：先放大再做第二輪去噪</label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率（1.5～2）</label><select id="hr-scale" disabled><option value="1.5">1.5×</option><option value="2" selected>2×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div></div><p class="help">未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。使用 sd-server 原生 <code>enable_hr</code>；預設關閉。會增加時間與 VRAM；8GB 建議從小圖開始。沒有 ESRGAN 權重時仍可使用內建放大，不等同純 ESRGAN。放大後上限 200 萬像素、寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。</p></details>
+<div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；6 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="6" required></div>
+<div><label for="seed">隨機種子 <span class="info"><button class="hint" type="button" aria-label="說明：seed">?</button><span class="hinttext" role="tooltip">-1 代表送出前自動產生一個確定的隨機種子，方便寫入檔名和重現；重試同一筆會沿用種子。指定相同整數也仍需相同模型／參數，不保證跨環境完全一致。</span></span></label><input id="seed" type="number" min="-1" max="4294967295" step="1" value="-1" required></div><div><label for="sampler">取樣器 <span class="info"><button class="hint" type="button" aria-label="說明：sampler">?</button><span class="hinttext" role="tooltip">Euler 為此介面的預設。若當前模型／伺服器不提供 Euler，請改選可用的取樣器；以實際回傳清單為準。</span></span></label><select id="sampler"><option value="">模型預設</option><option value="Euler" selected>Euler（預設）</option></select></div></div>
+<label for="viggle">Viggle Qwen-Image-2.1 Turbo LoRA（選填）</label><select id="viggle"><option value="off" selected>關閉（原本模型）</option><option value="6step">v0.2.1 r128 · 6 步（僅 Qwen-Image-2.1）</option></select><p class="help">開啟後單張任務自動使用 Euler、CFG 1、6 步及按輸出尺寸換算的官方 sigma；需要本機 fused LoRA 權重，且不支援 Hi-res 或一般去噪 Img2Img。此模型限非商業研究／評估。關閉不會套用 LoRA。</p>
+<p id="sampler-warning" class="help"></p><p class="help">每次加入任務，都會固定當下的描述、尺寸、步數、CFG、種子與取樣器。要換模型請回控制窗停止並重啟 server；佇列中的任務不會因此自動改參數。</p>
+<button class="action" id="generate" type="submit">＋ 加入單張佇列</button></form>
+<label for="bulk">一次貼上多筆描述（一行一筆） <span class="info"><button class="hint" type="button" aria-label="說明：bulk">?</button><span class="hinttext" role="tooltip">例如貼上 10 行描述，按「批量加入」即可排入 10 張。每一行都使用此刻上方相同的尺寸、步數、CFG、種子等設定；空白行會忽略。不要在同一筆描述內換行。</span></span></label><textarea id="bulk" placeholder="第一張的描述&#10;第二張的描述&#10;第三張的描述"></textarea><button id="add-bulk" type="button">批量加入</button></section>
+<section><h2>排程與成果</h2><div class="queue-actions"><button id="run-queue" type="button">▶ 開始／繼續</button><button id="pause-queue" class="secondary" type="button">⏸ 暫停下一張</button></div>
+<p id="queue-count" class="help"></p><p id="elapsed" role="timer" aria-live="off">尚未開始生圖</p>
+<div class="preview" id="preview">生成後，最新圖片會顯示在這裡；PNG 會自動保存到 image-output。</div><p id="status" role="status" aria-live="polite">準備就緒。</p><div id="result" class="result"></div>
+<h3>待辦任務與提示詞（完成後自動移除）</h3><ol id="tasklist" class="tasklist"></ol>
+<p class="help">可先排好 10 筆以上，一張接一張跑，生成中也能加入任務。圖片成功寫入 image-output 才算完成；完成任務會從清單自動移除，但預覽與圖片檔案保留。瀏覽器必須保持開啟，關頁不會背景繼續；重新開啟請使用控制窗「開繁中生圖網頁」。</p></section></div>
+<aside class="guide"><h2>這些模型欄位是什麼？</h2><div class="guidegrid"><article><h3>生圖模型 / 完整模型</h3><p>負責依照文字特徵生成影像。可選獨立 diffusion 權重，或模型自帶完整組件的 checkpoint；兩種形式不要同時填。</p></article><article><h3>文字編碼器</h3><p>將描述轉成模型能理解的特徵，不是幫你寫提示詞。不同模型可能需要 LLM、CLIP-L、CLIP-G 或 T5XXL，請依該模型說明選配。</p></article><article><h3>VAE</h3><p>將模型內部生成的潛空間結果解碼為圖片。部分完整 checkpoint 已內含 VAE，其餘則須另外指定相容檔案。</p></article></div><p class="help">本頁提供文字生圖、單張原圖 Img2Img 與最多 10 張參考圖的 Qwen Edit。檔案能選取不等於模型配套相容；若執行失敗，請查看控制窗的 <code>image-output/server.log</code>。圖生圖的去噪改動與指令式圖片編輯是不同流程。</p></aside>
+</main><script>
+/*QUEUE_CORE_START*/
+globalThis.QueueController=class QueueController{
+  constructor(storage,sender,onChange){
+    this.storage=storage;this.sender=sender;this.onChange=onChange;
+    this.key='ggufrun.image.queue.v1';this.running=false;this.paused=false;this.lastDurationMs=null;
+    try{const raw=JSON.parse(storage.getItem(this.key)||'[]');this.tasks=Array.isArray(raw)?raw.filter(t=>t && t.body && typeof t.body.prompt==='string' && t.status!=='done').slice(0,100).map(t=>({...t,status:t.status==='running'?'interrupted':t.status})):[];}catch(e){this.tasks=[];}
+    this.nextId=Math.max(0,...this.tasks.map(t=>Number(t.id)||0))+1;
+    try{this.storage.setItem(this.key,JSON.stringify(this.tasks));}catch(e){}
+  }
+  notify(){if(!this.tasks.length)this.nextId=1;try{this.storage.setItem(this.key,JSON.stringify(this.tasks));}catch(e){}this.onChange(this.tasks);}
+  add(body){if(this.tasks.length>=100)throw Error('最多保留 100 筆；請先清除完成項目');if(!body.prompt?.trim()&&body.mode!=='img2img')throw Error('請填寫畫面描述／修圖指令');
+    const task={id:this.nextId++,body:{...body,prompt:body.prompt.trim()},status:'pending'};this.tasks.push(task);this.notify();return task;}
+  remove(id){const task=this.tasks.find(t=>t.id===id);if(!task||task.status==='running')return;this.tasks=this.tasks.filter(t=>t.id!==id);this.notify();}
+  retry(id){const task=this.tasks.find(t=>t.id===id);if(task&&['failed','interrupted'].includes(task.status)){task.status='pending';delete task.error;this.notify();}}
+  move(id,offset){const i=this.tasks.findIndex(t=>t.id===id);const j=i+offset;
+    if(i<0||j<0||j>=this.tasks.length||this.tasks[i].status!=='pending'||this.tasks[j].status!=='pending')return;
+    [this.tasks[i],this.tasks[j]]=[this.tasks[j],this.tasks[i]];this.notify();}
+  clearDone(){this.tasks=this.tasks.filter(t=>t.status!=='done');this.notify();}
+  pause(){this.paused=true;this.notify();}
+  async start(){if(this.running)return;this.paused=false;this.running=true;this.notify();
+    try{while(!this.paused){const task=this.tasks.find(t=>t.status==='pending');if(!task)break;
+      task.status='running';task.startedAt=Date.now();delete task.durationMs;this.notify();
+      try{const result=await this.sender({...task.body},task);
+        if(!result?.saved)throw Error('圖片尚未成功保存到 image-output');
+        task.durationMs=Date.now()-task.startedAt;this.lastDurationMs=task.durationMs;
+        this.tasks=this.tasks.filter(t=>t!==task);this.notify();
+      }catch(e){task.durationMs=Date.now()-task.startedAt;task.status='failed';task.error=String(e?.message||e).slice(0,500);this.paused=true;this.notify();}
+    }}finally{this.running=false;this.notify();}}
+};
+/*QUEUE_CORE_END*/
+const $=id=>document.getElementById(id);
+async function discover(){
+  try{const r=await fetch('/sdapi/v1/options');if(r.ok){const d=await r.json();$('model').textContent='已載入：'+(d.sd_model_checkpoint||'未命名模型');}}
+  catch(e){$('model').textContent='模型狀態尚未就緒';}
+  try{const r=await fetch('/sdapi/v1/samplers');if(r.ok){const list=await r.json();let chosen=null;for(const item of list){if(!item.name)continue;if(item.name.toLowerCase()==='euler'){chosen=item.name;continue;}const option=document.createElement('option');option.value=item.name;option.textContent=item.name;$('sampler').append(option);}
+    if(chosen){$('sampler').options[1].value=chosen;$('sampler').value=chosen;}else{$('sampler').options[1].remove();$('sampler').value='';$('sampler-warning').textContent='此伺服器沒有 Euler 取樣器，已切換模型預設；亦可手動選可用取樣器。';}}}catch(e){}
+  for(const url of ['/sdapi/v1/upscalers','/sdapi/v1/latent-upscale-modes']){
+    try{const r=await fetch(url);if(!r.ok)continue;const names=await r.json();
+      for(const item of names){if(!item.name||item.name==='None'||[...$('hr-upscaler').options].some(o=>o.value===item.name))continue;
+        const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.model_path?'（外部模型）':'（內建）');$('hr-upscaler').append(option);}}
+    catch(e){}
+  }
+}
+const saveParams=new URLSearchParams(location.search);
+const savePort=Number(saveParams.get('save_port'));
+const saveToken=saveParams.get('save_token')||'';
+const saveBase=Number.isInteger(savePort)&&savePort>0&&savePort<65536&&/^[A-Za-z0-9_-]{20,}$/.test(saveToken)?'http://127.0.0.1:'+savePort:'';
+const stateNames={pending:'待執行',running:'生成中',done:'已完成',failed:'失敗',interrupted:'中斷待確認'};
+function duration(ms){const seconds=Math.floor(Math.max(0,ms)/1000);return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
+function updateElapsed(){const task=queue.tasks.find(t=>t.status==='running');
+  if(task){const time=duration(Date.now()-task.startedAt);const phase=progressLabel?' · '+progressLabel:'';
+    $('elapsed').textContent='目前生成／保存中 · 已耗時 '+time+phase;
+    const clock=document.getElementById('time-'+task.id);if(clock)clock.textContent=' · 已耗時 '+time+phase;
+  }else{$('elapsed').textContent=queue.lastDurationMs!=null?'上一張耗時 '+duration(queue.lastDurationMs):'尚未開始生圖';}}
+const unsavedImages=new Map();
+let progressLabel=null,progressTimer=null,totalSteps=0;
+async function pollProgress(){if(!saveBase||!progressTimer)return;
+  try{const r=await fetch(saveBase+'/progress?steps='+totalSteps+'&token='+encodeURIComponent(saveToken),{cache:'no-store'});
+    if(r.ok){const p=await r.json();progressLabel=p.label||null;}}catch(e){}}
+function startProgress(steps){totalSteps=Number(steps)||0;progressLabel=null;
+  if(progressTimer)return;progressTimer=setInterval(pollProgress,1000);pollProgress();}
+function stopProgress(){if(progressTimer){clearInterval(progressTimer);progressTimer=null;}progressLabel=null;}
+// Images live outside localStorage: pending tasks persist without exhausting its small quota.
+function sourceStore(mode,action){return new Promise((resolve,reject)=>{
+  const open=indexedDB.open('ggufrun.image.sources.v1',1);
+  open.onupgradeneeded=()=>open.result.createObjectStore('images');
+  open.onerror=()=>reject(Error('無法開啟來源圖儲存空間（IndexedDB）'));
+  open.onsuccess=()=>{const db=open.result;let req;
+    try{const tx=db.transaction('images',mode);req=action(tx.objectStore('images'));
+      tx.oncomplete=()=>{db.close();resolve(req.result);};
+      tx.onerror=()=>{db.close();reject(tx.error||Error('無法存取來源圖'))};
+      tx.onabort=()=>{db.close();reject(tx.error||Error('來源圖儲存中斷'))};
+    }catch(e){db.close();reject(e);}
+  };
+});}
+const saveSource=(key,file)=>sourceStore('readwrite',store=>store.put(file,key));
+const loadSource=key=>sourceStore('readonly',store=>store.get(key));
+async function sweepSources(){const keys=await sourceStore('readonly',store=>store.getAllKeys());
+  for(const key of keys){if(key===selectedSourceKey||pendingEditKeys.has(key)||selectedEditRefs.some(ref=>ref.key===key)||queue.tasks.some(t=>t.body?.sourceKey===key||t.body?.maskKey===key||t.body?.sourceKeys?.includes(key)))continue;
+    await sourceStore('readwrite',store=>store.delete(key));}
+}
+function sourceDataUrl(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('讀取原圖失敗'));reader.readAsDataURL(file);});}
+let selectedSourceKey=null,sourceReady=null,sourceObjectUrl=null,sourceRevision=0;
+let selectedEditRefs=[],editReady=Promise.resolve(),editRevision=0;
+const pendingEditKeys=new Set();
+async function modeState(){
+  const r=await fetch(saveBase+'/mode?token='+encodeURIComponent(saveToken));
+  if(!r.ok)throw Error('無法查詢 Image 控制窗模式；請從控制窗重新開啟網頁');
+  return r.json();
+}
+async function ensureMode(mode){
+  const vision=mode==='qwen_edit';
+  if(!saveBase)throw Error('請從 Image 控制窗的「開繁中生圖網頁」進入');
+  const before=await modeState();
+  if(before.vision!==vision){
+    $('status').textContent='正在切換模式並重啟生圖服務…';
+    const r=await fetch(saveBase+'/mode',{method:'POST',headers:{'Content-Type':'application/json','X-GGUFRun-Token':saveToken},body:JSON.stringify({mode})});
+    const result=await r.json();if(!r.ok)throw Error(result.status||'無法切換 Image 模式');
+  }
+  for(let i=0;i<240;i++){
+    const state=await modeState();
+    if(state.error)throw Error('模式切換失敗：'+state.error);
+    if(!state.switching&&state.vision===vision&&state.ready)return;
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
+  throw Error('等待 Image Server 載入逾時；請檢查控制窗日誌');
+}
+/*VIGGLE_SCHEDULE_START*/
+function viggleSigmas(width,height){
+  if(!Number.isInteger(width)||!Number.isInteger(height)||width<=0||height<=0||width%32||height%32)throw Error('Viggle 輸出尺寸需為 32 的倍數');
+  // QwenImage21 diffusers: mu=.5+(packed_image_tokens-256)*.4/(8192-256)
+  // FlowMatchEulerDiscreteScheduler time_shift: exp(mu)*t/(1-t+exp(mu)*t)
+  const mu=.5+((width/16)*(height/16)-256)*.4/(8192-256),shift=Math.exp(mu);
+  return [1,.9375,.875,.75,.5,.25].map(t=>shift*t/(1-t+shift*t)).concat([0]);
+}
+/*VIGGLE_SCHEDULE_END*/
+const VIGGLE_FUSED='Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors';
+function pngDimensions(image){
+  // Read the PNG IHDR in the first 24 decoded bytes; the saver still validates the whole file.
+  const header=atob(image.slice(0,32));
+  if(header.length<24||[137,80,78,71,13,10,26,10].some((v,i)=>header.charCodeAt(i)!==v)||header.slice(12,16)!=='IHDR')throw Error('伺服器回傳的圖片不是 PNG，無法保存');
+  const dimension=offset=>(header.charCodeAt(offset)*0x1000000)+(header.charCodeAt(offset+1)<<16)+(header.charCodeAt(offset+2)<<8)+header.charCodeAt(offset+3);
+  const width=dimension(16),height=dimension(20);
+  if(width<1||width>16384||height<1||height>16384)throw Error('伺服器回傳的 PNG 尺寸不合理，無法保存');
+  return [width,height];
+}
+async function sendImage(body,task){
+  if(!saveBase)throw Error('未連接本機自動存圖服務；請從 Image 控制窗的「開繁中生圖網頁」重新開啟頁面');
+  $('status').textContent='目前任務生成中；請看上方耗時計時。';
+  let image=unsavedImages.get(task.id);
+  if(!image){
+    if(body.seed===-1){body.seed=crypto.getRandomValues(new Uint32Array(1))[0];task.body.seed=body.seed;queue.notify();}
+    await ensureMode(body.mode||'txt2img');
+    if(body.viggleTurbo && !(await modeState()).offload)throw Error('8 GB 顯卡使用 Viggle 前，請在 Image 控制窗開啟 CPU offload 並重啟 server');
+    startProgress(body.steps);
+    const {mode,sourceKey,sourceKeys,maskKey,viggleTurbo,offload:legacyOffload,...requestBody}=body;
+    if(viggleTurbo && (mode==='img2img'||body.enable_hr))throw Error('Viggle 僅支援文字生圖與 Qwen Edit，不支援去噪 Img2Img／Hi-res');
+    let response;
+    if(mode==='qwen_edit'||viggleTurbo){
+      const keys=mode==='qwen_edit'?(Array.isArray(sourceKeys)?sourceKeys:sourceKey?[sourceKey]:[]):[];
+      if(mode==='qwen_edit'&&(!keys.length||keys.length>10))throw Error('指令修圖需要 1～10 張參考圖；請重新加入任務');
+      const refs=[];
+      for(const key of keys){
+        const source=await loadSource(key);
+        if(!source)throw Error('找不到佇列參考圖；請重新上傳並加入任務');
+        refs.push(await sourceDataUrl(source));
+      }
+      const sample_params={sample_steps:body.steps,guidance:{txt_cfg:body.cfg_scale}};
+      if(body.sampler_name)sample_params.sample_method=body.sampler_name.toLowerCase().replace(/\s+/g,'_');
+      if(viggleTurbo){
+        sample_params.sample_steps=6;sample_params.sample_method='euler';
+        sample_params.guidance={txt_cfg:1};sample_params.custom_sigmas=viggleSigmas(body.width,body.height);
+      }
+      const native={prompt:body.prompt,negative_prompt:body.negative_prompt||'',width:body.width,height:body.height,
+        seed:body.seed,batch_count:1,init_image:null,ref_images:refs,sample_params,output_format:'png'};
+      if(viggleTurbo)native.lora=[{path:VIGGLE_FUSED,multiplier:1}];
+      response=await fetch('/sdcpp/v1/img_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(native)});
+      if(!response.ok)throw Error('原生修圖提交失敗 '+response.status+'：'+(await response.text()).slice(0,400));
+      const submitted=await response.json();
+      if(response.status!==202||!/^\/sdcpp\/v1\/jobs\/[A-Za-z0-9_-]+$/.test(submitted.poll_url||''))throw Error('原生修圖未回傳有效 job 輪詢路徑');
+      let completed=false;
+      for(let i=0;i<1440;i++){
+        const poll=await fetch(submitted.poll_url,{cache:'no-store'});
+        if(!poll.ok)throw Error('修圖任務查詢失敗 '+poll.status+'：'+(await poll.text()).slice(0,400));
+        const job=await poll.json();
+        if(job.status==='completed'){
+          image=job.result?.images?.[0]?.b64_json;
+          if(!image)throw Error('原生修圖完成，但沒有回傳圖片');
+          completed=true;break;
+        }
+        if(job.status==='failed'||job.status==='cancelled'||job.status==='canceled')throw Error('原生修圖失敗：'+(job.error||job.status));
+        if(job.status!=='queued'&&job.status!=='running'&&job.status!=='generating')throw Error('未知修圖任務狀態：'+job.status);
+        await new Promise(resolve=>setTimeout(resolve,500));
+      }
+      if(!completed)throw Error('原生修圖逾時；請查看控制窗日誌及原生 job 狀態');
+    }else{
+      const endpoint=mode==='img2img'?'/sdapi/v1/img2img':'/sdapi/v1/txt2img';
+      if(mode==='img2img'&&!requestBody.prompt)requestBody.prompt='the same image';
+      if(mode==='img2img'){
+        if(!sourceKey)throw Error('圖生圖缺少原圖，請重新上傳並加入任務');
+        const source=await loadSource(sourceKey);
+        if(!source)throw Error('找不到佇列原圖（可能清除了瀏覽器資料）；請移除任務後重新上傳');
+        requestBody.init_images=[await sourceDataUrl(source)];
+        if(maskKey){const mask=await loadSource(maskKey);if(!mask)throw Error('找不到佇列遮罩；請重新選取遮罩');
+          requestBody.mask=await sourceDataUrl(mask);}
+      }
+      response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody)});
+    }
+    if(mode!=='qwen_edit'&&!viggleTurbo){
+      if(!response.ok)throw Error('生圖伺服器回應 '+response.status+'：'+(await response.text()).slice(0,400));
+      const data=await response.json();image=data.images?.[0];
+    }
+    if(!image)throw Error('伺服器沒有回傳圖片，請查看 server.log');
+    image=image.replace(/^data:image\/png;base64,/,'');unsavedImages.set(task.id,image);
+  }
+  stopProgress();
+  const [pngWidth,pngHeight]=pngDimensions(image);
+  let saveResponse;
+  try{saveResponse=await fetch(saveBase+'/save',{method:'POST',headers:{'Content-Type':'application/json','X-GGUFRun-Token':saveToken},body:JSON.stringify({image,task_id:task.id,width:pngWidth,height:pngHeight,steps:body.steps,cfg_scale:body.cfg_scale,seed:body.seed,sampler:body.sampler_name||'default',mode:body.mode||'txt2img',denoising_strength:body.denoising_strength,duration_ms:Math.min(43200000,Math.max(0,Date.now()-task.startedAt))})});}
+  catch(e){throw Error('無法連接本機存圖服務；本頁仍保留這張圖片，按重試會先嘗試保存，不會重新生圖');}
+  const saved=await saveResponse.json();if(!saveResponse.ok||!saved.filename)throw Error('自動保存失敗：'+(saved.error||saveResponse.status)+'；按重試會先嘗試保存');
+  task.file=saved.filename;unsavedImages.delete(task.id);
+  showImage(task.file);$('status').textContent='圖片已自動保存；將依序繼續。';
+  return {saved:true};
+}
+const queue=new QueueController(localStorage,sendImage,renderQueue);
+function showImage(file){if(!file||!saveBase)return;
+  const img=document.createElement('img');img.crossOrigin='anonymous';img.src=saveBase+'/image/'+encodeURIComponent(file)+'?token='+encodeURIComponent(saveToken);img.alt='最新生成圖片';
+  img.onerror=()=>{$('status').textContent='預覽無法讀取；請確認 Image 控制窗仍開啟，並在 image-output 找到 '+file;};
+  $('preview').replaceChildren(img);
+  $('result').textContent='已自動保存：image-output\\'+file;
+}
+function actionButton(text,handler){const b=document.createElement('button');b.type='button';b.textContent=text;b.addEventListener('click',handler);return b;}
+function renderTaskRefs(row,body){
+  const keys=Array.isArray(body.sourceKeys)?body.sourceKeys:body.sourceKey?[body.sourceKey]:[];
+  if(body.mode!=='qwen_edit'||!keys.length)return;
+  const refs=document.createElement('div');refs.className='task-refs';row.append(refs);
+  keys.forEach((key,index)=>{
+    const slot=document.createElement('div');slot.className='task-ref';
+    const label=document.createElement('span');label.textContent='參考圖 '+(index+1);
+    slot.append(label);refs.append(slot);
+    loadSource(key).then(file=>{
+      if(!slot.isConnected)return;
+      if(!file){slot.append(document.createTextNode('圖片遺失'));return;}
+      const img=document.createElement('img'),url=URL.createObjectURL(file);
+      img.alt='參考圖 '+(index+1);img.title=file.name||img.alt;
+      img.onload=img.onerror=()=>URL.revokeObjectURL(url);
+      img.src=url;slot.append(img);
+    }).catch(()=>{if(slot.isConnected)slot.append(document.createTextNode('預覽無法載入'));});
+  });
+}
+function renderQueue(){const list=$('tasklist');list.replaceChildren();
+  const counts={pending:0,running:0,done:0,failed:0,interrupted:0};
+  for(const [index,t] of queue.tasks.entries()){counts[t.status]=(counts[t.status]||0)+1;
+    const row=document.createElement('li');const head=document.createElement('div');head.className='task-head';
+    const title=document.createElement('strong');title.textContent='目前 #'+(index+1)+' · '+t.body.prompt;
+    const status=document.createElement('span');status.textContent=stateNames[t.status]||t.status;head.append(title,status);row.append(head);
+    const summary=document.createElement('p');summary.className='task-summary';summary.textContent=(t.body.mode==='img2img'?'Img2Img 去噪 · 改動 '+t.body.denoising_strength+' · ':t.body.mode==='qwen_edit'?'Qwen Edit 指令修圖 · ':'文字生圖 · ')+t.body.width+'×'+t.body.height+' · '+t.body.steps+' 步 · CFG '+t.body.cfg_scale+' · 種子 '+t.body.seed+(t.durationMs!=null?' · 耗時 '+duration(t.durationMs):'');
+    if(t.status==='running'){const clock=document.createElement('span');clock.id='time-'+t.id;clock.textContent=' · 已耗時 '+duration(Date.now()-t.startedAt);summary.append(clock);}row.append(summary);
+    renderTaskRefs(row,t.body);
+    if(t.file){const file=document.createElement('p');file.className='task-summary';file.textContent='已保存：image-output\\'+t.file;row.append(file);}
+    if(t.error){const err=document.createElement('p');err.className='task-error';err.textContent=t.error;row.append(err);}
+    const actions=document.createElement('div');actions.className='task-buttons';
+    if(t.status==='pending'){actions.append(actionButton('↑ 提前',()=>queue.move(t.id,-1)),actionButton('↓ 延後',()=>queue.move(t.id,1)));}
+    if(t.status==='failed'||t.status==='interrupted')actions.append(actionButton('↻ 重試（可能重複生成）',()=>queue.retry(t.id)));
+    if(t.file)actions.append(actionButton('檢視已保存圖片',()=>showImage(t.file)));
+    if(t.status!=='running')actions.append(actionButton('移除紀錄',()=>{queue.remove(t.id);unsavedImages.delete(t.id);sweepSources().catch(()=>{});}));
+    row.append(actions);list.append(row);
+  }
+  $('queue-count').textContent='待執行 '+counts.pending+'｜生成中 '+counts.running+'｜失敗 '+counts.failed+'｜中斷待確認 '+counts.interrupted;
+  $('pause-queue').disabled=!queue.running;
+  $('run-queue').disabled=queue.running||!counts.pending;
+  updateElapsed();
+}
+function draftBody(){
+  for(const id of ['width','height','steps','cfg','seed'])if(!$(id).checkValidity())throw Error('請檢查 '+id+' 欄位的數值');
+  const body={prompt:$('prompt').value.trim(),negative_prompt:$('negative').value,width:Number($('width').value),height:Number($('height').value),steps:Number($('steps').value),cfg_scale:Number($('cfg').value),seed:Number($('seed').value),batch_size:1};
+  if($('sampler').value)body.sampler_name=$('sampler').value;
+  if($('mode').value==='qwen_edit')body.mode='qwen_edit';
+  if($('mode').value==='img2img'){
+    if(!$('denoising-strength').checkValidity())throw Error('改動強度請填 0.01～1');
+    body.mode='img2img';body.denoising_strength=Number($('denoising-strength').value);
+  }
+  if($('mode').value==='txt2img'&&$('enable-hr').checked){
+    if(!$('hr-steps').checkValidity()||!$('hr-denoise').checkValidity())throw Error('請檢查 Hi-res 第二輪步數／去噪強度');
+    const scale=Number($('hr-scale').value),w=Math.round(body.width*scale),h=Math.round(body.height*scale);
+    if(w>4096||h>4096||w*h>2_000_000||w%32||h%32)throw Error('Hi-res 輸出上限 200 萬像素，放大後寬高必須為 32 的倍數；請調整底圖尺寸或倍率');
+    body.enable_hr=true;body.hr_upscaler=$('hr-upscaler').value;body.hr_scale=scale;
+    body.hr_resize_x=w;body.hr_resize_y=h;body.hr_steps=Number($('hr-steps').value);
+    body.denoising_strength=Number($('hr-denoise').value);
+  }
+  if($('viggle').value==='6step'){
+    if(body.mode==='img2img'||body.enable_hr)throw Error('Viggle 不支援去噪 Img2Img 或 Hi-res；請關閉其中一項');
+    viggleSigmas(body.width,body.height);
+    body.viggleTurbo=true;body.steps=6;body.cfg_scale=1;body.sampler_name='Euler';
+  }
+  return body;
+}
+async function draftWithSource(){const body=draftBody();
+  if(body.mode==='qwen_edit'){
+    const revision=editRevision;
+    await editReady;
+    if(revision!==editRevision||!selectedEditRefs.length)throw Error('請先加入至少一張有效參考圖');
+    body.sourceKeys=selectedEditRefs.map(ref=>ref.key);
+  }
+  if(body.mode==='img2img'){
+    const revision=sourceRevision,key=sourceReady?await sourceReady:null;
+    if(revision!==sourceRevision||!key)throw Error('請先選擇有效的 PNG／JPEG 原圖');
+    body.sourceKey=key;
+    if(body.mode==='img2img'&&$('mask-file').files?.length){
+      const mask=$('mask-file').files[0],source=await loadSource(key);
+      if(mask.type!=='image/png'||!mask.size||mask.size>10*1024*1024)throw Error('遮罩需為 10 MB 以內的 PNG');
+      const [a,b]=await Promise.all([createImageBitmap(source),createImageBitmap(mask)]);
+      const aligned=a.width===b.width&&a.height===b.height;a.close();b.close();
+      if(!aligned)throw Error('遮罩寬高必須與原圖完全相同');
+      body.maskKey=crypto.randomUUID();await saveSource(body.maskKey,mask);
+    }
+  }
+  return body;
+}
+let previousMode='txt2img';
+$('mode').addEventListener('change',async()=>{
+  const current=$('mode').value;
+  if(queue.running){$('mode').value=previousMode;$('status').textContent='目前有任務執行中；請先暫停並等這張完成，才可切換生成模式。';return;}
+  previousMode=current;
+  $('prompt').required=current!=='img2img';
+  $('prompt').placeholder=current==='qwen_edit'?'例如：只把裙子改成黑色':current==='img2img'?'可留空：不提供額外畫面描述':'例如：白色桌上的紅蘋果，自然窗光';
+  $('source-fields').hidden=current==='txt2img';
+  $('source-single').hidden=current!=='img2img';
+  $('edit-references').hidden=current!=='qwen_edit';
+  $('source-info').textContent=current==='qwen_edit'?'參考圖 0 張；可逐張移除。已加入佇列的任務不受影響。': '原圖暫存在此瀏覽器；改選不影響佇列。';
+  if(current==='qwen_edit')renderEditRefs();
+  $('denoise-fields').hidden=current!=='img2img';
+  $('hires-fields').hidden=current!=='txt2img';
+  syncHrOptions();
+  $('edit-help').hidden=current!=='qwen_edit';
+  try{await ensureMode(current);$('status').textContent=current==='qwen_edit'?'Qwen 視覺權重已載入；可加入修圖任務。':'視覺權重已卸載；可使用文字生圖或去噪圖生圖。';}
+  catch(e){$('status').textContent=e.message;}
+});
+function renderEditRefs(){
+  const list=$('edit-list');list.replaceChildren();
+  selectedEditRefs.forEach((ref,index)=>{
+    const row=document.createElement('div');row.className='edit-item';
+    const img=document.createElement('img');img.src=ref.url;img.alt='參考圖 '+(index+1);
+    const name=document.createElement('span');name.textContent=(index+1)+'. '+ref.name;
+    const up=actionButton('↑',()=>{[selectedEditRefs[index-1],selectedEditRefs[index]]=[selectedEditRefs[index],selectedEditRefs[index-1]];renderEditRefs();});
+    up.disabled=index===0;up.setAttribute('aria-label','上移參考圖 '+(index+1));
+    const down=actionButton('↓',()=>{[selectedEditRefs[index+1],selectedEditRefs[index]]=[selectedEditRefs[index],selectedEditRefs[index+1]];renderEditRefs();});
+    down.disabled=index===selectedEditRefs.length-1;down.setAttribute('aria-label','下移參考圖 '+(index+1));
+    const remove=actionButton('移除',()=>{
+      const i=selectedEditRefs.indexOf(ref);if(i<0)return;
+      selectedEditRefs.splice(i,1);URL.revokeObjectURL(ref.url);renderEditRefs();
+      sweepSources().catch(()=>{});
+    });remove.setAttribute('aria-label','移除參考圖 '+(index+1)+'：'+ref.name);
+    row.append(img,name,up,down,remove);list.append(row);
+  });
+  if($('mode').value==='qwen_edit')$('source-info').textContent='參考圖 '+selectedEditRefs.length+' 張；依畫面順序送出。移除只影響尚未加入的任務。';
+  $('clear-edit').disabled=!selectedEditRefs.length;
+}
+$('clear-edit').addEventListener('click',()=>{
+  ++editRevision;
+  for(const ref of selectedEditRefs)URL.revokeObjectURL(ref.url);
+  selectedEditRefs=[];$('edit-files').value='';renderEditRefs();
+  sweepSources().catch(()=>{});
+});
+$('edit-files').addEventListener('change',()=>{
+  const files=[...$('edit-files').files];$('edit-files').value='';
+  if(!files.length)return;
+  // Keep batches in selection order even when a previous batch is still being stored.
+  const revision=editRevision;
+  editReady=editReady.then(async()=>{
+    if(revision!==editRevision)return;
+    if(selectedEditRefs.length+files.length>10)throw Error('Qwen Edit 最多 10 張參考圖；請先移除多餘圖片');
+    for(const file of files){
+      if(revision!==editRevision)return;
+      if(!['image/png','image/jpeg'].includes(file.type)||!file.size||file.size>10*1024*1024)throw Error('每張參考圖需為 10 MB 以內的 PNG／JPEG');
+      const bitmap=await createImageBitmap(file);
+      const width=bitmap.width,height=bitmap.height;bitmap.close();
+      if(width>4096||height>4096||width*height>8_000_000)throw Error('每張參考圖最多 4096 像素寬高、800 萬像素');
+      if(revision!==editRevision)return;
+      const key=crypto.randomUUID();pendingEditKeys.add(key);
+      try{await saveSource(key,file);
+        if(revision!==editRevision)continue;
+        selectedEditRefs.push({key,name:file.name,url:URL.createObjectURL(file)});
+        renderEditRefs();
+      }finally{pendingEditKeys.delete(key);}
+    }
+  }).catch(e=>{$('status').textContent=e.message;$('source-info').textContent=e.message;});
+  editReady.then(()=>sweepSources().catch(()=>{}));
+});
+$('source-file').addEventListener('change',()=>{
+  const file=$('source-file').files?.[0],revision=++sourceRevision;selectedSourceKey=null;
+  if(sourceObjectUrl){URL.revokeObjectURL(sourceObjectUrl);sourceObjectUrl=null;}
+  $('source-preview').hidden=true;
+  if(!file){sourceReady=null;return;}
+  sourceReady=(async()=>{
+    if(!['image/png','image/jpeg'].includes(file.type)||file.size>10*1024*1024||!file.size)throw Error('請選 PNG／JPEG 原圖，大小不可超過 10 MB');
+    const bitmap=await createImageBitmap(file);
+    const dimensions=[bitmap.width,bitmap.height];bitmap.close();
+    if(dimensions.some(x=>x>4096)||dimensions[0]*dimensions[1]>8_000_000)throw Error('原圖最多 4096 像素寬高、800 萬像素，請先縮小圖片');
+    const key=crypto.randomUUID();await saveSource(key,file);
+    if(revision!==sourceRevision)return null;
+    selectedSourceKey=key;sourceObjectUrl=URL.createObjectURL(file);
+    $('source-preview').src=sourceObjectUrl;$('source-preview').hidden=false;
+    $('source-info').textContent='已選 '+file.name+'（'+dimensions.join('×')+'）；原圖暫存在此瀏覽器。';
+    sweepSources().catch(()=>{});return key;
+  })().catch(e=>{if(revision===sourceRevision){$('source-info').textContent=e.message;$('status').textContent=e.message;}return null;});
+});
+$('form').addEventListener('submit',async ev=>{ev.preventDefault();try{queue.add(await draftWithSource());$('status').textContent='已加入佇列；可繼續填下一筆，或按「開始／繼續」。';}catch(e){$('status').textContent=e.message;}});
+$('add-bulk').addEventListener('click',async()=>{
+  try{const body=await draftWithSource();const lines=$('bulk').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    if(!lines.length)throw Error('請先在批量欄位填入提示詞（一行一筆）');
+    if(queue.tasks.length+lines.length>100)throw Error('佇列最多保留 100 筆，請減少貼上的行數');
+    for(const prompt of lines)queue.add({...body,prompt});
+    $('bulk').value='';$('status').textContent='已批量加入 '+lines.length+' 筆；按「開始／繼續」後依序生成。';
+  }catch(e){$('status').textContent=e.message;}
+});
+$('run-queue').addEventListener('click',()=>{queue.start().then(()=>{
+  sweepSources().catch(()=>{});
+  const error=queue.tasks.find(t=>t.status==='failed');
+  $('status').textContent=error?'有任務失敗：'+error.error+'；排程已暫停，請查看日誌或重試。':
+    queue.paused?'目前這張已完成，佇列已暫停。':'排程已完成；圖片均已自動保存在 image-output。';
+});});
+$('pause-queue').addEventListener('click',()=>{queue.pause();$('status').textContent='收到暫停指令：目前這張完成後停止，不會中斷正在生成的圖片。';});
+function syncSizePreset(){const value=$('width').value+'x'+$('height').value;
+  $('size-preset').value=[...$('size-preset').options].some(option=>option.value===value)?value:'custom';
+  const w=Number($('width').value),h=Number($('height').value);
+  $('size-warning').textContent=w*h>1280*720?'注意：這個尺寸在 8 GB 顯卡上可能耗盡顯存；高解析度選項不保證可完成。':'';
+}
+$('size-preset').addEventListener('change',()=>{const value=$('size-preset').value;if(value==='custom')return;
+  const [w,h]=value.split('x');$('width').value=w;$('height').value=h;syncSizePreset();});
+function syncHrOptions(){$('hr-options').querySelectorAll('select,input').forEach(element=>{element.disabled=!$('enable-hr').checked;});}
+$('enable-hr').addEventListener('change',syncHrOptions);
+for(const id of ['width','height'])$(id).addEventListener('input',syncSizePreset);
+syncSizePreset();
+syncHrOptions();
+renderQueue();
+sweepSources().catch(()=>{});
+setInterval(updateElapsed,1000);
+// 開頁一律空白：不還原任何上次生成的圖片或耗時。
+if(!saveBase)$('status').textContent='尚未連接自動存圖服務；請從 Image 控制窗的「開繁中生圖網頁」進入。';
+discover();
+</script></body></html>
