@@ -14,6 +14,7 @@ button,.download{display:inline-flex;align-items:center;justify-content:center;b
 .info{position:relative;display:inline-block;vertical-align:middle;margin-left:6px}.info .hint{width:22px;height:22px;padding:0;border:1px solid #67bbeb;border-radius:50%;background:#224466;color:#dcf3ff;font-size:13px}.hinttext{display:none;position:absolute;z-index:20;bottom:calc(100% + 7px);left:0;width:min(340px,85vw);background:#193551;color:#f2f7ff;border:1px solid #64a6d3;box-shadow:0 8px 24px #0009;border-radius:9px;padding:12px;line-height:1.55;font-size:13px;font-weight:400}.info:hover .hinttext,.info:focus-within .hinttext{display:block}
 input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;margin-right:7px}select:disabled{opacity:.55;cursor:wait}input:disabled{opacity:.55;cursor:not-allowed}summary{cursor:pointer;color:#bcd0e7;font-size:14px;margin:15px 0 7px}summary:hover{color:#f0f6ff}details[open] summary{margin-bottom:10px}
 .queue-actions{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.queue-actions button{flex:1}.tasklist{list-style:none;padding:0;margin:12px 0;max-height:460px;overflow:auto}.tasklist li{border:1px solid #344f6b;border-radius:9px;padding:12px;margin:9px 0;overflow-wrap:anywhere}.task-head{display:flex;justify-content:space-between;gap:8px}.task-buttons{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}.task-buttons button,.queue-actions .secondary{background:#284766;color:#e8f3ff;padding:6px 10px;font-size:13px}.task-buttons button:hover,.queue-actions .secondary:hover{background:#3a668a}.task-summary{color:#9fb5cc;font-size:13px;line-height:1.5}.task-error{color:#ffc6b4}#bulk{height:92px}.task-refs{display:flex;flex-wrap:wrap;gap:9px;margin:9px 0}.task-ref{display:grid;gap:3px;font-size:12px;color:#bcd0e7}.task-ref img{width:76px;height:76px;object-fit:cover;border:1px solid #426080;border-radius:6px}.source-preview{max-width:100%;max-height:210px;object-fit:contain;border-radius:8px;margin:8px 0;display:block}.source-preview[hidden],.source-fields[hidden],#hires-fields[hidden],#edit-references[hidden],#source-single[hidden]{display:none}.edit-list{display:grid;gap:7px;margin:10px 0}.edit-item{display:flex;align-items:center;gap:10px;background:#0b192d;border:1px solid #426080;border-radius:9px;padding:7px}.edit-item img{width:56px;height:56px;object-fit:cover;border-radius:5px}.edit-item span{flex:1;overflow-wrap:anywhere}.edit-item button,#clear-edit{background:#284766;color:#e8f3ff;padding:7px 11px;font-size:13px}
+.lora-list{display:grid;gap:7px;margin:10px 0}.lora-item{display:flex;align-items:center;gap:10px;background:#0b192d;border:1px solid #426080;border-radius:9px;padding:7px}.lora-item label{display:flex;align-items:center;gap:7px;margin:0;flex:1;overflow-wrap:anywhere}.lora-item input[type="number"]{width:100px}
 @media(max-width:990px){.grid{grid-template-columns:1fr}.guidegrid{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
 </style>
 </head>
@@ -27,9 +28,11 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 <div class="fields"><div><label for="width">寬度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：width">?</button><span class="hinttext" role="tooltip">輸出圖片的水平像素數；高解析度會大量增加顯存與時間，8 GB 顯卡建議先以 512×512 測試。</span></span></label><input id="width" type="number" min="64" max="4096" step="32" value="512" required></div><div><label for="height">高度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：height">?</button><span class="hinttext" role="tooltip">輸出圖片的垂直像素數；自訂尺寸請使用 32 的倍數。</span></span></label><input id="height" type="number" min="64" max="4096" step="32" value="1024" required></div></div>
 <label for="size-preset">常用尺寸 <span class="info"><button class="hint" type="button" aria-label="說明：size-preset">?</button><span class="hinttext" role="tooltip">預設直式 512×1024，另有橫式 1024×512、方形 512×512 與 16:9 尺寸。選取後填入寬高，寬高均為 32 倍數；標示「約」的影片規格並非精確 16:9，仍可手動修改；2K、4K 不保證 8 GB 顯卡能完成。</span></span></label><select id="size-preset"><option value="512x1024" selected>512×1024（直式，預設）</option><option value="1024x512">1024×512（橫式）</option><option value="512x512">512×512（方形）</option><option value="640x384">約 360p · 640×384</option><option value="864x480">約 480p · 864×480</option><option value="1280x736">約 720p · 1280×736</option><option value="1920x1088">約 1080p · 1920×1088</option><option value="2560x1440">2K · 2560×1440（高顯存）</option><option value="3840x2176">約 4K · 3840×2176（極高顯存）</option><option value="custom">自訂尺寸</option></select><p id="size-warning" class="help"></p>
 <details id="hires-fields"><summary>進階設定：Hi-res 高解析度（僅文字生圖）</summary><label><input id="enable-hr" type="checkbox"> 啟用 Hi-res：先放大再做第二輪去噪</label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率（1.5～2）</label><select id="hr-scale" disabled><option value="1.5">1.5×</option><option value="2" selected>2×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div></div><p class="help">未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。使用 sd-server 原生 <code>enable_hr</code>；預設關閉。會增加時間與 VRAM；8GB 建議從小圖開始。沒有 ESRGAN 權重時仍可使用內建放大，不等同純 ESRGAN。放大後上限 200 萬像素、寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。</p></details>
-<div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；6 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="6" required></div>
+<div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；1 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="1" required></div>
 <div><label for="seed">隨機種子 <span class="info"><button class="hint" type="button" aria-label="說明：seed">?</button><span class="hinttext" role="tooltip">-1 代表送出前自動產生一個確定的隨機種子，方便寫入檔名和重現；重試同一筆會沿用種子。指定相同整數也仍需相同模型／參數，不保證跨環境完全一致。</span></span></label><input id="seed" type="number" min="-1" max="4294967295" step="1" value="-1" required></div><div><label for="sampler">取樣器 <span class="info"><button class="hint" type="button" aria-label="說明：sampler">?</button><span class="hinttext" role="tooltip">Euler 為此介面的預設。若當前模型／伺服器不提供 Euler，請改選可用的取樣器；以實際回傳清單為準。</span></span></label><select id="sampler"><option value="">模型預設</option><option value="Euler" selected>Euler（預設）</option></select></div></div>
 <label for="viggle">Viggle Qwen-Image-2.1 Turbo LoRA（選填）</label><select id="viggle"><option value="off" selected>關閉（原本模型）</option><option value="6step">v0.2.1 r128 · 6 步（僅 Qwen-Image-2.1）</option></select><p class="help">開啟後單張任務自動使用 Euler、CFG 1、6 步及按輸出尺寸換算的官方 sigma；需要本機 fused LoRA 權重，且不支援 Hi-res 或一般去噪 Img2Img。此模型限非商業研究／評估。關閉不會套用 LoRA。</p>
+<label for="nsfw-lora">NSFW LoRA（常駐，可與 Viggle 同時套用） <span class="info"><button class="hint" type="button" aria-label="說明：nsfw-lora">?</button><span class="hinttext" role="tooltip">清單由伺服器 <code>/sdapi/v1/loras</code> 提供，此欄只列出檔名或名稱含 nsfw 的權重。可與 Viggle 同時套用，兩者強度各自獨立；沒有偵測到檔案時固定為「關閉」。選了但沒加入任務不會生效。</span></span></label><select id="nsfw-lora"><option value="off" selected>關閉（不套用）</option></select><div class="fields"><div><label for="nsfw-strength">NSFW LoRA 強度（0～2）</label><input id="nsfw-strength" type="number" min="0" max="2" step="0.05" value="1"></div></div><p class="help">文字生圖與 Img2Img 走 sdapi 的 <code>lora</code> 陣列送出；Viggle 開啟時兩顆會一起套用（各自 tensor 不重疊），6 步與 sigma 仍依 Viggle 設定。</p>
+<details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次，以 NSFW 欄位或 Viggle 的設定優先。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
 <p id="sampler-warning" class="help"></p><p class="help">每次加入任務，都會固定當下的描述、尺寸、步數、CFG、種子與取樣器。要換模型請回控制窗停止並重啟 server；佇列中的任務不會因此自動改參數。</p>
 <button class="action" id="generate" type="submit">＋ 加入單張佇列</button></form>
 <label for="bulk">一次貼上多筆描述（一行一筆） <span class="info"><button class="hint" type="button" aria-label="說明：bulk">?</button><span class="hinttext" role="tooltip">例如貼上 10 行描述，按「批量加入」即可排入 10 張。每一行都使用此刻上方相同的尺寸、步數、CFG、種子等設定；空白行會忽略。不要在同一筆描述內換行。</span></span></label><textarea id="bulk" placeholder="第一張的描述&#10;第二張的描述&#10;第三張的描述"></textarea><button id="add-bulk" type="button">批量加入</button></section>
@@ -82,6 +85,9 @@ async function discover(){
         const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.model_path?'（外部模型）':'（內建）');$('hr-upscaler').append(option);}}
     catch(e){}
   }
+  try{const r=await fetch('/sdapi/v1/loras');if(r.ok){const list=await r.json();loraCatalog=Array.isArray(list)?list.filter(item=>item&&item.path):[];}}
+  catch(e){}
+  renderLoraCatalog();
 }
 const saveParams=new URLSearchParams(location.search);
 const savePort=Number(saveParams.get('save_port'));
@@ -157,6 +163,49 @@ function viggleSigmas(width,height){
 }
 /*VIGGLE_SCHEDULE_END*/
 const VIGGLE_FUSED='Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors';
+const LORA_MAX_STRENGTH=2;
+let loraCatalog=[];
+function loraLabel(entry){return entry.name||String(entry.path||'').replace(/\.[^.]+$/,'');}
+function loraStrength(raw,fallback){const value=Number(raw);return Number.isFinite(value)&&value>=0&&value<=LORA_MAX_STRENGTH?value:fallback;}
+function loraEntriesFromControls(includeViggle){
+  const entries=[],seen=new Set();
+  const add=(path,multiplier)=>{if(!path||path==='off'||seen.has(path))return;
+    seen.add(path);entries.push({path,multiplier});};
+  add($('nsfw-lora').value,loraStrength($('nsfw-strength').value,1));
+  for(const item of document.querySelectorAll('#lora-list .lora-item')){
+    if(!item.querySelector('input[type="checkbox"]').checked)continue;
+    add(item.dataset.path,loraStrength(item.querySelector('input[type="number"]').value,1));
+  }
+  if(includeViggle)add(VIGGLE_FUSED,1);
+  return entries;
+}
+function renderLoraCatalog(){
+  const select=$('nsfw-lora'),keep=select.value;
+  for(const option of [...select.options].slice(1))option.remove();
+  const list=$('lora-list');list.replaceChildren();
+  const others=[];
+  for(const entry of loraCatalog){
+    const path=String(entry.path||'');
+    if(path===VIGGLE_FUSED)continue;
+    if(/nsfw/i.test(path+' '+String(entry.name||''))){
+      const option=document.createElement('option');option.value=path;option.textContent=loraLabel(entry);select.append(option);
+    }
+    others.push(entry);
+  }
+  if([...select.options].some(option=>option.value===keep))select.value=keep;
+  for(const entry of others){
+    const row=document.createElement('div');row.className='lora-item';row.dataset.path=String(entry.path||'');
+    const label=document.createElement('label'),check=document.createElement('input');
+    check.type='checkbox';check.setAttribute('aria-label','套用 LoRA：'+loraLabel(entry));
+    const name=document.createElement('span');name.textContent=loraLabel(entry);
+    label.append(check,name);
+    const strength=document.createElement('input');strength.type='number';strength.min='0';strength.max=String(LORA_MAX_STRENGTH);
+    strength.step='0.05';strength.value='1';strength.setAttribute('aria-label','LoRA 強度：'+loraLabel(entry));
+    row.append(label,strength);list.append(row);
+  }
+  $('lora-warning').textContent=loraCatalog.length?'': '伺服器沒有回報任何 LoRA；請確認啟動時帶入 --lora-model-dir，且 IMAGE-MODELS/loras 內有權重檔。';
+  $('nsfw-lora').disabled=select.options.length<2;
+}
 function pngDimensions(image){
   // Read the PNG IHDR in the first 24 decoded bytes; the saver still validates the whole file.
   const header=atob(image.slice(0,32));
@@ -195,7 +244,9 @@ async function sendImage(body,task){
       }
       const native={prompt:body.prompt,negative_prompt:body.negative_prompt||'',width:body.width,height:body.height,
         seed:body.seed,batch_count:1,init_image:null,ref_images:refs,sample_params,output_format:'png'};
-      if(viggleTurbo)native.lora=[{path:VIGGLE_FUSED,multiplier:1}];
+      const loras=[...(Array.isArray(body.lora)?body.lora:[])].filter(item=>item.path!==VIGGLE_FUSED);
+      if(viggleTurbo)loras.push({path:VIGGLE_FUSED,multiplier:1});
+      if(loras.length)native.lora=loras;
       response=await fetch('/sdcpp/v1/img_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(native)});
       if(!response.ok)throw Error('原生修圖提交失敗 '+response.status+'：'+(await response.text()).slice(0,400));
       const submitted=await response.json();
@@ -217,6 +268,7 @@ async function sendImage(body,task){
       if(!completed)throw Error('原生修圖逾時；請查看控制窗日誌及原生 job 狀態');
     }else{
       const endpoint=mode==='img2img'?'/sdapi/v1/img2img':'/sdapi/v1/txt2img';
+      if(!Array.isArray(requestBody.lora)||!requestBody.lora.length)delete requestBody.lora;
       if(mode==='img2img'&&!requestBody.prompt)requestBody.prompt='the same image';
       if(mode==='img2img'){
         if(!sourceKey)throw Error('圖生圖缺少原圖，請重新上傳並加入任務');
@@ -277,7 +329,7 @@ function renderQueue(){const list=$('tasklist');list.replaceChildren();
     const row=document.createElement('li');const head=document.createElement('div');head.className='task-head';
     const title=document.createElement('strong');title.textContent='目前 #'+(index+1)+' · '+t.body.prompt;
     const status=document.createElement('span');status.textContent=stateNames[t.status]||t.status;head.append(title,status);row.append(head);
-    const summary=document.createElement('p');summary.className='task-summary';summary.textContent=(t.body.mode==='img2img'?'Img2Img 去噪 · 改動 '+t.body.denoising_strength+' · ':t.body.mode==='qwen_edit'?'Qwen Edit 指令修圖 · ':'文字生圖 · ')+t.body.width+'×'+t.body.height+' · '+t.body.steps+' 步 · CFG '+t.body.cfg_scale+' · 種子 '+t.body.seed+(t.durationMs!=null?' · 耗時 '+duration(t.durationMs):'');
+    const summary=document.createElement('p');summary.className='task-summary';summary.textContent=(t.body.mode==='img2img'?'Img2Img 去噪 · 改動 '+t.body.denoising_strength+' · ':t.body.mode==='qwen_edit'?'Qwen Edit 指令修圖 · ':'文字生圖 · ')+t.body.width+'×'+t.body.height+' · '+t.body.steps+' 步 · CFG '+t.body.cfg_scale+' · 種子 '+t.body.seed+(t.body.lora?.length?' · LoRA '+t.body.lora.map(item=>String(item.path).replace(/\.[^.]+$/,'')+'@'+item.multiplier).join(', '):'')+(t.durationMs!=null?' · 耗時 '+duration(t.durationMs):'');
     if(t.status==='running'){const clock=document.createElement('span');clock.id='time-'+t.id;clock.textContent=' · 已耗時 '+duration(Date.now()-t.startedAt);summary.append(clock);}row.append(summary);
     renderTaskRefs(row,t.body);
     if(t.file){const file=document.createElement('p');file.className='task-summary';file.textContent='已保存：image-output\\'+t.file;row.append(file);}
@@ -316,6 +368,8 @@ function draftBody(){
     viggleSigmas(body.width,body.height);
     body.viggleTurbo=true;body.steps=6;body.cfg_scale=1;body.sampler_name='Euler';
   }
+  const loras=loraEntriesFromControls($('viggle').value==='6step');
+  if(loras.length)body.lora=loras;
   return body;
 }
 async function draftWithSource(){const body=draftBody();

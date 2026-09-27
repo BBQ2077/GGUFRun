@@ -1,10 +1,10 @@
 @echo off
-REM Portable launcher; uses the installed Python 3 interpreter.
+REM Uses Python on PATH; install Python for Windows with Tcl/Tk support.
 setlocal
-where py >nul 2>&1
+where py >nul 2>nul
 if not errorlevel 1 (
-  start "" py -3 "%~dp0gguf-ui.py"
+  py -3 "%~dp0gguf-ui.py"
 ) else (
-  start "" python "%~dp0gguf-ui.py"
+  python "%~dp0gguf-ui.py"
 )
 endlocal

@@ -19,7 +19,7 @@ BASE = pathlib.Path(__file__).resolve().parent
 SETTINGS = BASE / 'image-settings.json'
 DEFAULT_RUNTIME = 'stable-diffusion-cuda12-master-908-88411ef/'
 FILES = {
-    'diffusion': 'IMAGE-MODELS/qwen-image-2.1-UC-Q4_K_M.gguf',
+    'diffusion': 'IMAGE-MODELS/qwen-image-2.1-Q4_K_M.gguf',
     'llm': 'IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
     'vae': 'IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors',
     'llm_vision': 'IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
@@ -54,6 +54,35 @@ def model_path(base, value):
     return str(path if path.is_absolute() else pathlib.Path(base) / path)
 
 
+CACHE_MODES = ('off', 'spectrum', 'easycache', 'taylorseer', 'cache-dit')
+CACHE_MODE_LABELS = {
+    'off': '關閉（原版，最清晰）',
+    'spectrum': 'Spectrum（可調 W，建議 0.10）',
+    'easycache': 'EasyCache（最快，畫質降較多）',
+    'taylorseer': 'TaylorSeer（平衡，約省 8%）',
+    'cache-dit': 'Cache-DiT（平衡，約省 8%）',
+}
+
+
+SPECTRUM_W_DEFAULT = '0.10'
+
+
+def valid_spectrum_w(value):
+    """Spectrum forecasting weight: only 0.05～1.0 is meaningful; larger is faster but softer."""
+    if isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return 0.05 <= number <= 1.0
+
+
+def format_spectrum_w(value):
+    """Normalise to a compact decimal string so the argv stays reproducible."""
+    return f'{float(value):g}'
+
+
 def valid_conditioning_cache_size(value):
     """Match the backend's non-negative int argument without accepting malformed input."""
     return (value == 'default' or
@@ -63,7 +92,8 @@ def valid_conditioning_cache_size(value):
 
 
 def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=None, vision=False,
-                     cache_mode='off', diffusion_fa=False, conditioning_cache_size='default'):
+                     cache_mode='off', diffusion_fa=False, conditioning_cache_size='default',
+                     spectrum_w=SPECTRUM_W_DEFAULT):
     if vision and not str((FILES if models is None else models).get('llm_vision', '')).strip():
         raise ValueError('Qwen 指令修圖需要選擇視覺 mmproj 檔案')
     try:
@@ -86,16 +116,20 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
             cmd.extend((flag, model_path(base, value)))
     cmd.extend(('--listen-ip', '127.0.0.1', '--listen-port', str(port),
                 '--serve-html-path', str(base / 'assets' / 'image-web.html')))
-    if cache_mode not in ('off', 'spectrum'):
-        raise ValueError('快取模式僅支援關閉或 Spectrum')
-    if cache_mode == 'spectrum':
-        cmd.extend(('--cache-mode', 'spectrum'))
+    if cache_mode not in CACHE_MODES:
+        raise ValueError('快取模式僅支援：' + '、'.join(CACHE_MODES))
+    if cache_mode != 'off':
+        cmd.extend(('--cache-mode', cache_mode))
+        if cache_mode == 'spectrum':
+            if not valid_spectrum_w(spectrum_w):
+                raise ValueError('Spectrum W 值必須介於 0.05～1.0')
+            cmd.extend(('--cache-option', 'w=' + format_spectrum_w(spectrum_w)))
     if not isinstance(diffusion_fa, bool):
         raise ValueError('Flash Attention 必須為開啟或關閉')
     if diffusion_fa:
         cmd.append('--diffusion-fa')
     # Optional Viggle adapter is never applied at startup; the native API
-    # supplies it per task; an optional adapter must be downloaded separately.
+    # supplies it per task.  Keep the original safetensors untouched.
     viggle = base / 'IMAGE-MODELS' / 'loras' / 'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors'
     if viggle.is_file():
         cmd.extend(['--lora-model-dir', str(viggle.parent)])
@@ -179,7 +213,9 @@ class ImageApp:
         saved = load_settings()
         self.port = tk.StringVar(value=str(saved.get('port', '18436')))
         self.offload = tk.BooleanVar(value=saved.get('offload', True))
-        self.cache_mode = tk.StringVar(value=saved.get('cache_mode') if saved.get('cache_mode') in ('off', 'spectrum') else 'off')
+        self.cache_mode = tk.StringVar(value=saved.get('cache_mode') if saved.get('cache_mode') in CACHE_MODES else 'off')
+        self.spectrum_w = tk.StringVar(value=saved.get('spectrum_w')
+            if valid_spectrum_w(saved.get('spectrum_w')) else SPECTRUM_W_DEFAULT)
         self.diffusion_fa = tk.BooleanVar(value=saved.get('diffusion_fa') is True)
         self.conditioning_cache_size = tk.StringVar(value=saved.get('conditioning_cache_size')
             if valid_conditioning_cache_size(saved.get('conditioning_cache_size')) else 'default')
@@ -227,11 +263,19 @@ class ImageApp:
         cache_row = ttk.Frame(frame)
         cache_row.pack(fill='x', pady=(0, 5))
         ttk.Label(cache_row, text='取樣加速：').pack(side='left')
-        self.cache_box = ttk.Combobox(cache_row, textvariable=self.cache_mode, values=('off', 'spectrum'),
+        self.cache_box = ttk.Combobox(cache_row, textvariable=self.cache_mode, values=CACHE_MODES,
                                       state='readonly', width=14)
         self.cache_box.pack(side='left', padx=(0, 8))
-        ttk.Label(cache_row, text='off＝原版；spectrum＝預測並跳過部分計算，畫質可能改變；停止後再選、重啟生效。',
-                  wraplength=650).pack(side='left')
+        ttk.Label(cache_row, text='Spectrum W 值（僅 Spectrum 生效）：').pack(side='left')
+        self.spectrum_w_entry = ttk.Entry(cache_row, textvariable=self.spectrum_w, width=8)
+        self.spectrum_w_entry.pack(side='left', padx=(0, 8))
+        self.cache_hint = ttk.Label(cache_row, text='', wraplength=520)
+        self.cache_hint.pack(side='left')
+        self.cache_mode.trace_add('write', lambda *_: self.sync_cache_controls())
+        ttk.Label(frame, text='off＝原版最清晰；spectrum＝外推跳步，W 越小越保畫質（建議 0.10，預設 0.40 較糊）；'
+                              'easycache＝最快但畫質降較多；taylorseer／cache-dit＝平衡（約省 8%）。'
+                              '加速選項停止後再選、重啟生效；W 只在加速模式為 spectrum 時送出。',
+                  wraplength=850, foreground='#555').pack(anchor='w', pady=(0, 5))
         speed_row = ttk.Frame(frame)
         speed_row.pack(fill='x', pady=(0, 5))
         self.fa_box = ttk.Checkbutton(speed_row, text='Flash Attention（diffusion；可能省顯存）',
@@ -269,6 +313,7 @@ class ImageApp:
         except (OSError, ValueError) as exc:
             self.status.config(text=f'無法重設日誌：{exc}')
         root.protocol('WM_DELETE_WINDOW', self.close)
+        self.sync_cache_controls()
         self._poll_after = root.after(500, self.poll)
 
     def browse_runtime(self):
@@ -288,8 +333,18 @@ class ImageApp:
         for cb in self.entries.values():
             cb['values'] = paths
 
+    def sync_cache_controls(self):
+        """W only reaches the backend when cache mode is spectrum; grey it out otherwise."""
+        spectrum = self.cache_mode.get() == 'spectrum'
+        self.spectrum_w_entry.config(state='normal' if spectrum else 'disabled')
+        if spectrum and not valid_spectrum_w(self.spectrum_w.get()):
+            self.cache_hint.config(text='W 需介於 0.05～1.0', foreground='#c0392b')
+        else:
+            self.cache_hint.config(text='', foreground='#555')
+
     def settings(self):
         return {'port': self.port.get(), 'offload': self.offload.get(), 'cache_mode': self.cache_mode.get(),
+                'spectrum_w': self.spectrum_w.get(),
                 'diffusion_fa': self.diffusion_fa.get(),
                 'conditioning_cache_size': self.conditioning_cache_size.get(),
                 'runtime': self.runtime.get(), 'models': {key: var.get() for key, var in self.models.items()}}
@@ -327,7 +382,8 @@ class ImageApp:
             cmd = build_server_cmd(BASE, self.port.get(), self.offload.get(),
                                    self.runtime.get(), config['models'], cache_mode=config['cache_mode'],
                                    diffusion_fa=config['diffusion_fa'],
-                                   conditioning_cache_size=config['conditioning_cache_size'])
+                                   conditioning_cache_size=config['conditioning_cache_size'],
+                                   spectrum_w=config.get('spectrum_w', SPECTRUM_W_DEFAULT))
             port = int(self.port.get())
             if port_busy(port):
                 raise RuntimeError(f'埠 {port} 已被使用；請換埠，不接管別人的程序。')
@@ -432,7 +488,8 @@ class ImageApp:
             cmd = build_server_cmd(BASE, port, offload, config['runtime'], config['models'],
                                    vision=vision, cache_mode=config['cache_mode'],
                                    diffusion_fa=config.get('diffusion_fa', False),
-                                   conditioning_cache_size=config.get('conditioning_cache_size', 'default'))
+                                   conditioning_cache_size=config.get('conditioning_cache_size', 'default'),
+                                   spectrum_w=config.get('spectrum_w', SPECTRUM_W_DEFAULT))
             self.logfile.write('\n[GGUFRun] 切換到' + ('Qwen 指令修圖（帶 mmproj）' if vision else '無視覺權重模式') +
                                ('；CPU offload 開啟：' if offload else '；自動適配：') + subprocess.list2cmdline(cmd) + '\n')
             self.logfile.flush()

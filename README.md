@@ -1,30 +1,60 @@
-# GGUFRun — 本機 GGUF 推理控制台
+# GGUFRun — Windows 本機 LLM／生圖控制台
 
-Windows 本機 Tkinter 控制台：管理 `llama.cpp` 的 `llama-server`，另以 Image 模式管理 `stable-diffusion.cpp` 的 `sd-server`。LLM 和生圖模型、runtime 需自行依其原作者授權下載；本儲存庫只提供程式碼，不附帶模型、LoRA 或執行檔。
+GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server`；另有 Image 控制窗管理 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) `sd-server`，以及用瀏覽器操作的繁中生圖頁面。**此公開版只有程式碼，不含模型、LoRA、執行檔或 CUDA DLL。** 兩個服務預設只監聽本機 `127.0.0.1`。
 
-## 準備
+## 共通準備
 
-- Windows 10/11、Python 3（含 Tkinter；建議 3.11 以上）。LLM 控制窗只用標準庫。
-- 從 [llama.cpp](https://github.com/ggml-org/llama.cpp) 取得適合電腦的 Windows build，將 `llama-server.exe` 和所需 DLL 放在 `RUNTIMES/llama-official/`；要切換其他 build，可另放 `RUNTIMES/<名稱>/`。
-- LLM GGUF 放在 `LLM-MODELS/`，或在介面中手動指定外部檔案。
-- 生圖功能需另從 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) 取得包含 `sd-server.exe` 的相容 Windows build，放在 `RUNTIMES/stable-diffusion-cuda12-master-908-88411ef/`，或在 Image 控制窗選擇其他 runtime。所選版本須支援你啟用的參數與 Qwen-Image-2.1；不同 build 的功能可能不同。
-- 生圖權重請自行取得，放於 `IMAGE-MODELS/` 或在 Image 控制窗選擇外部模型。文字編碼器、diffusion、VAE、視覺 mmproj 分欄選擇，依模型作者說明配對；預填的檔名只是選擇範例，不代表已附帶或已安裝。
+安裝 [Windows 版 Python 3](https://www.python.org/downloads/windows/)（須包含 Tkinter）；執行 `py -3 -m tkinter` 確認可以開視窗。`start-ui.bat` 使用 `py -3` 或 PATH 上的 `python`；主程式只用 Python 標準庫，不需 pip 安裝。以下路徑皆相對於 GGUFRun 專案根目錄，缺少的資料夾可自行建立。**只使用 LLM 不必下載 Image 的模型／runtime；只用 Image 也不必下載 LLM 的。**
 
-> 安裝路徑不限；本程式以自身所在目錄為基準。
+## LLM 模式：下載什麼、放哪裡
 
-## 使用
+**1. llama.cpp 執行環境**：從 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下載符合硬體的 **Windows 已編譯建置**（CPU 或適合顯卡的 CUDA 等版本），將 `llama-server.exe` 連同**同一個包內所需的 DLL** 放在 `RUNTIMES/llama-official/`。不要只下載 GitHub 的 Source code 壓縮檔，也不要混放不同建置的 DLL。
 
-1. 雙擊 `start-ui.bat`（或執行 `python gguf-ui.py`）。第一次開啟可能沒有可選模型或 runtime，須自行安裝上述檔案。
-2. 在主視窗選 LLM、runtime 及選項，啟動本機服務；需要網頁則使用控制窗的開啟按鈕。
-3. 點「🎨 Image 模式」開啟 `image-ui.py`；也可執行 `python image-ui.py`。選相容 runtime 和模型，保留 CPU offload（顯存有限時尤其重要），啟動 Image Server，再由該控制窗開啟繁中生圖網頁。網頁的自動存圖需經此控制窗的本機存圖服務。
-4. 如只要 LLM 命令列模式，可用 `start-gguf.bat <模型檔名> [jinja] [dryrun]`；該批次檔使用 `RUNTIMES/llama-official/`。
+**2. 至少一個 LLM 主模型 GGUF**：點下面的檔案頁下載其中**一個**，放進 `LLM-MODELS/`。UI 會自動掃描該目錄的 `*.gguf`，無需額外的模型註冊步驟；也可從 UI 登記其他目錄的模型。
 
-設定檔會儲存在程式所在資料夾：LLM 使用 `ui-settings.json`、`models.json`、`presets.json`；Image 控制窗使用 `image-settings.json`。圖片與當次 server 日誌儲存在 `image-output/`。服務預設只監聽 `127.0.0.1`。
+| 選擇示例 | 下載檔案 | runtime 注意事項 |
+|---|---|---|
+| Spark-X2.5-4B | [Spark-X2.5-4B-Q4_K_M.gguf](https://huggingface.co/abenzerps/Spark-X2.5-4B-GGUF/blob/main/Spark-X2.5-4B-Q4_K_M.gguf) | 模型頁要求 llama.cpp **b10828 或更新／相容建置**，舊版本可能不認得此架構。 |
+| Ternary Bonsai 2 27B | [Ternary-Bonsai-2-27B-PTQ1_0.gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/blob/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf) | **官方 llama.cpp 不能跑 PTQ1_0**；另需 [PrismML-Eng/llama.cpp](https://github.com/PrismML-Eng/llama.cpp) 的相容 Windows 建置，放入 `RUNTIMES/llama-bonsai/`，並在 GUI 選擇該 runtime。 |
 
-### Image 網頁
+其他 [GGUF 模型](https://huggingface.co/models?search=GGUF)也能用，但要先核對模型架構、runtime 版本及授權。草稿模型、LLM LoRA、視覺 mmproj 均非純文字聊天必備。雙擊 `start-ui.bat`（或 `py -3 gguf-ui.py`）選主模型和 runtime 啟動；預設網址是 `http://127.0.0.1:18435/`。命令列 `start-gguf.bat Spark-X2.5-4B-Q4_K_M.gguf dryrun` 可先預覽指令，去掉 `dryrun` 才會啟動；此批次檔**只使用 `llama-official/`**，Bonsai 請用 GUI 選專用 runtime。
 
-支援文字生圖、Img2Img 去噪、Qwen 多參考圖指令編輯，以及文字生圖的選配 Hi-res；單一頁面依序執行任務。尺寸快捷選項使用 32 的倍數（例如約 1080p 為 **1920×1088**，不是標準影片 1920×1080）；自訂寬高與 Hi-res 輸出亦檢查 32 對齊。伺服器仍可能改寫尺寸，存圖時會按回傳 PNG 的實際寬高保存；存圖服務仍驗證 PNG。
+## Image 模式：下載什麼、放哪裡
 
-可選的 Viggle Qwen-Image-2.1 Turbo 模式只支援 txt2img 和 Qwen Edit：6 步 Euler、CFG 1、解析度依賴的 sigmas。權重**不在本儲存庫**；若取得作者的官方 LoRA，因目前 GGUF 使用融合的 `gate_up`，可使用 `tools/viggle-turbo/fuse_viggle.py` 將相容官方來源轉為程式指定檔名的 GGUF 對應版，放在 `IMAGE-MODELS/loras/`，然後重啟 Image Server。轉換工具需要 `numpy`；使用 LoRA 前請閱讀 [Viggle 原模型卡及授權條件](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)，**作者標示僅供非商業研究與評估**。本專案 MIT 程式碼授權不覆蓋第三方模型與權重。若無權重，請保持該選項關閉。
+**1. stable-diffusion.cpp 執行環境**：從 [stable-diffusion.cpp Releases](https://github.com/leejet/stable-diffusion.cpp/releases) 下載符合硬體的 Windows **已編譯**包，將 `sd-server.exe` 與同版所需 DLL 放在 `RUNTIMES/stable-diffusion-cuda12-master-908-88411ef/`（程式預設值，對應 [master-908-88411ef](https://github.com/leejet/stable-diffusion.cpp/releases/tag/master-908-88411ef)）。若下載別的版本，可放 `RUNTIMES/<自訂名稱>/`，再在 Image 控制窗選對應 runtime。CUDA 建置需要相容 NVIDIA GPU／驅動；不同版本可能不支援部分加速選項。
 
-本專案程式碼依 [MIT License](LICENSE) 授權；第三方權重／runtime 遵循各原作者條件。
+**2. Qwen-Image-2.1 範例模型組合**：文字生圖需下載**前三項**；只有使用 Qwen Edit 參考圖指令修圖時才需第四項。每項點來源檔案頁下載，放在右欄位置：
+
+| Image 控制窗欄位 | 要下載的檔案 | 預設放置位置 |
+|---|---|---|
+| 生圖模型（diffusion） | [qwen-image-2.1-Q4_K_M.gguf](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF/blob/main/qwen-image-2.1-Q4_K_M.gguf) | `IMAGE-MODELS/qwen-image-2.1-Q4_K_M.gguf` |
+| LLM 文字編碼器 | [Qwen3VL-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf) | `IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf` |
+| VAE | [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors) | `IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors` |
+| 視覺 mmproj（Qwen Edit 選配） | [mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf) | `IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` |
+
+文字編碼器來源的實際檔名是 `Qwen3VL`（不是有連字號的 `Qwen3-VL`）；選擇其他檔名或放置目錄時，在 Image 控制窗改選**實際檔案路徑**，不要把不同權重只改名當作同一模型。生圖使用的 Qwen3VL 編碼器放在 `IMAGE-MODELS/`，不是 LLM 模式的 `LLM-MODELS/`。參數組合參考 [Unsloth 模型卡](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF)及 [stable-diffusion.cpp 文件](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md)。換用其他生圖模型時依其說明選擇 checkpoint／CLIP-L／CLIP-G／T5XXL 等欄位，無需的欄位留白。
+
+**3. 啟動**：在主視窗按「Image 模式」，或執行 `py -3 image-ui.py`；核對 runtime 與各模型欄位、啟動 Image Server（預設 `127.0.0.1:18436`），**從 Image 控制窗的按鈕**打開繁中生圖頁面，讓自動存圖服務連接上。填提示詞、加入佇列並按「開始／繼續」，PNG 自動儲存在 `image-output/`。佇列依賴該瀏覽器頁面保持開啟，關頁不會在背景繼續生成。
+
+下載後大致如下（目錄可自行建立，軟體不會自動下載）：
+
+```text
+GGUFRun/
+  start-ui.bat               gguf-ui.py          image-ui.py
+  image_save_service.py      assets/image-web.html
+  RUNTIMES/
+    llama-official/           llama-server.exe + 同包 DLL（一般 LLM）
+    llama-bonsai/            相容 fork 的 llama-server.exe + 同包 DLL（Bonsai 選配）
+    stable-diffusion-cuda12-master-908-88411ef/  sd-server.exe + 同包 DLL（Image）
+  LLM-MODELS/                自行下載的 LLM 主模型 GGUF
+  IMAGE-MODELS/              自行下載的生圖權重／編碼器／VAE／選配 mmproj
+  image-output/              圖片與 Image Server 日誌（執行後產生）
+```
+
+使用者設定儲存在 `models.json`、`ui-settings.json`、`presets.json`、`image-settings.json`；生成圖片與 Image Server 日誌儲存在 `image-output/`。
+
+## 可選功能與授權
+
+Image 網頁支援文字生圖、Img2Img、Qwen Edit 多參考圖與選配 Hi-res；支援哪些功能取決於模型與 sd-server 建置。Viggle Turbo LoRA 是選配，**本公開版不附權重也不附轉換後權重**；未取得合法且相容的權重時請維持關閉。[Viggle 模型卡](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)標示非商業研究與評估限制。請分別遵守模型、runtime、LoRA 的原始授權；本專案 [MIT 授權](LICENSE) 僅涵蓋本專案程式碼。
+
+測試：`py -3 -m unittest discover -s tests -p 'test_*.py'`；瀏覽器佇列測試另需 Node.js：`node --test tests/test_image_queue.cjs`。正常使用不需要 Node.js。
