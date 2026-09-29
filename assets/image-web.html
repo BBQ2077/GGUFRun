@@ -22,15 +22,15 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 <header><div><h1>GGUFRun · 生圖</h1><p class="sub">本機 stable-diffusion.cpp｜繁體中文操作頁</p></div><span id="model" class="chip">正在查詢已載入模型…</span></header>
 <div class="grid"><section><h2>建立圖片</h2>
 <form id="form"><label for="mode">生成模式</label><select id="mode"><option value="txt2img">文字生圖（不載入 mmproj）</option><option value="img2img">Img2Img（整張去噪重畫，不載入 mmproj）</option><option value="qwen_edit">Qwen Edit（參考圖指令修圖，按需載入 mmproj）</option></select><p class="help">離開 Qwen Edit、選擇「文字生圖」或「Img2Img」，就會重啟 Image Server 並卸載 mmproj；沒有另一個卸載步驟。任務生成中不可切換。請勿在其他分頁或外部 API 並行送出任務。待辦佇列和已存圖不會刪除。</p>
-<div id="source-fields" class="source-fields" hidden><div id="source-single"><label for="source-file">上傳原圖（PNG／JPEG，最多 10 MB）</label><input id="source-file" type="file" accept="image/png,image/jpeg"><img id="source-preview" class="source-preview" alt="原圖預覽" hidden></div><div id="edit-references" hidden><label for="edit-files">Qwen Edit 參考圖（可分次加入，依顯示順序送出，最多 10 張）</label><input id="edit-files" type="file" accept="image/png,image/jpeg" multiple><div id="edit-list" class="edit-list"></div><button id="clear-edit" type="button" class="secondary">清空參考圖</button><p class="help">每張都可個別移除，用 ↑↓ 調整參考圖順序；選錯圖不會送出。待辦任務另會顯示已排入的參考圖預覽。更多參考圖可能增加記憶體需求。</p></div><p id="source-info" class="help">原圖暫存在此瀏覽器，供佇列重開後使用；不會複製到 image-output。改選原圖不會改動已加入的任務。</p><div id="denoise-fields"><label for="denoising-strength">改動強度（Denoising strength） <span class="info"><button class="hint" type="button" aria-label="說明：denoising-strength">?</button><span class="hinttext" role="tooltip">0 越接近原圖，1 改動越大。建議先用 0.5～0.7 試；這是傳統圖生圖的去噪強度，不等於 Qwen 官方參考圖編輯的指令強度。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</span></span></label><input id="denoising-strength" type="number" min="0.01" max="1" step="0.01" value="0.65"><div id="mask-fields"><label for="mask-file">局部重畫遮罩（選填；PNG，白色改、黑色保留）</label><input id="mask-file" type="file" accept="image/png"><p class="help">遮罩需與原圖相同像素尺寸；留空就是普通去噪圖生圖。Qwen Edit 不使用遮罩。</p></div><p class="help">普通去噪圖生圖可不填描述；本版 sd-server 要求非空 prompt，留空時將送出中性文字 <code>the same image</code>（不是 Qwen 修改指令）。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</p></div><p id="edit-help" class="help" hidden>Qwen Edit：參考圖由視覺編碼器理解後依指令編輯；不使用去噪強度。提示詞請描述要改什麼（例如「只把裙子改成黑色」）。不是像素級保證，背景仍可能變化。</p></div>
+<div id="source-fields" class="source-fields" hidden><div id="source-single"><label for="source-file">上傳原圖（PNG／JPEG，最多 10 MB）</label><input id="source-file" type="file" accept="image/png,image/jpeg"><img id="source-preview" class="source-preview" alt="原圖預覽" hidden></div><div id="edit-references" hidden><label for="edit-files">Qwen Edit 參考圖（可分次加入，依顯示順序送出，最多 10 張）</label><input id="edit-files" type="file" accept="image/png,image/jpeg" multiple><div id="edit-list" class="edit-list"></div><button id="clear-edit" type="button" class="secondary">清空參考圖</button><p class="help">每張都可個別移除，用 ↑↓ 調整參考圖順序；選錯圖不會送出。待辦任務另會顯示已排入的參考圖預覽。更多參考圖可能增加記憶體需求。</p></div><p id="source-info" class="help">原圖暫存在此瀏覽器，供佇列重開後使用；不會複製到 image-output。改選原圖不會改動已加入的任務。</p><div id="denoise-fields"><label for="denoising-strength">改動強度（Denoising strength） <span class="info"><button class="hint" type="button" aria-label="說明：denoising-strength">?</button><span class="hinttext" role="tooltip">0 越接近原圖，1 改動越大。建議先用 0.5～0.7 試；這是傳統圖生圖的去噪強度，不等於 Qwen 官方參考圖編輯的指令強度。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</span></span></label><input id="denoising-strength" type="number" min="0" max="1" step="0.01" value="0.65"><div id="mask-fields"><label for="mask-file">局部重畫遮罩（選填；PNG，白色改、黑色保留）</label><input id="mask-file" type="file" accept="image/png"><p class="help">遮罩需與原圖相同像素尺寸；留空就是普通去噪圖生圖。Qwen Edit 不使用遮罩。</p></div><p class="help">普通去噪圖生圖可不填描述；本版 sd-server 要求非空 prompt，留空時將送出中性文字 <code>the same image</code>（不是 Qwen 修改指令）。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</p></div><p id="edit-help" class="help" hidden>Qwen Edit：參考圖由視覺編碼器理解後依指令編輯；不使用去噪強度。提示詞請描述要改什麼（例如「只把裙子改成黑色」）。不是像素級保證，背景仍可能變化。</p></div>
 <label for="prompt">畫面描述（Prompt） <span class="info"><button class="hint" type="button" aria-label="說明：prompt">?</button><span class="hinttext" role="tooltip">寫出你希望畫面包含的主體、場景、光線、風格與構圖。例如「白桌上一顆紅蘋果，窗邊自然光，寫實攝影」。模型對語言的理解不盡相同；加入佇列時會保存這段文字，不會因之後改輸入框而變動。</span></span></label><textarea id="prompt" placeholder="例如：白色桌上的一顆紅蘋果，自然窗光，寫實攝影" required></textarea>
 <label for="negative">不希望出現的內容（選填） <span class="info"><button class="hint" type="button" aria-label="說明：negative">?</button><span class="hinttext" role="tooltip">負面描述，告訴模型盡量避免哪些畫面元素，例如模糊或文字。不是所有模型都以相同方式支援；不確定時先留空。它不會刪除已生成圖片中的東西。</span></span></label><input id="negative" placeholder="依模型而異；不需要可留空">
 <div class="fields"><div><label for="width">寬度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：width">?</button><span class="hinttext" role="tooltip">輸出圖片的水平像素數；高解析度會大量增加顯存與時間，8 GB 顯卡建議先以 512×512 測試。</span></span></label><input id="width" type="number" min="64" max="4096" step="32" value="512" required></div><div><label for="height">高度（像素） <span class="info"><button class="hint" type="button" aria-label="說明：height">?</button><span class="hinttext" role="tooltip">輸出圖片的垂直像素數；自訂尺寸請使用 32 的倍數。</span></span></label><input id="height" type="number" min="64" max="4096" step="32" value="1024" required></div></div>
-<label for="size-preset">常用尺寸 <span class="info"><button class="hint" type="button" aria-label="說明：size-preset">?</button><span class="hinttext" role="tooltip">預設直式 512×1024，另有橫式 1024×512、方形 512×512 與 16:9 尺寸。選取後填入寬高，寬高均為 32 倍數；標示「約」的影片規格並非精確 16:9，仍可手動修改；2K、4K 不保證 8 GB 顯卡能完成。</span></span></label><select id="size-preset"><option value="512x1024" selected>512×1024（直式，預設）</option><option value="1024x512">1024×512（橫式）</option><option value="512x512">512×512（方形）</option><option value="640x384">約 360p · 640×384</option><option value="864x480">約 480p · 864×480</option><option value="1280x736">約 720p · 1280×736</option><option value="1920x1088">約 1080p · 1920×1088</option><option value="2560x1440">2K · 2560×1440（高顯存）</option><option value="3840x2176">約 4K · 3840×2176（極高顯存）</option><option value="custom">自訂尺寸</option></select><p id="size-warning" class="help"></p>
-<details id="hires-fields"><summary>進階設定：Hi-res 高解析度（僅文字生圖）</summary><label><input id="enable-hr" type="checkbox"> 啟用 Hi-res：先放大再做第二輪去噪</label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率（1.5～2）</label><select id="hr-scale" disabled><option value="1.5">1.5×</option><option value="2" selected>2×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div></div><p class="help">未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。使用 sd-server 原生 <code>enable_hr</code>；預設關閉。會增加時間與 VRAM；8GB 建議從小圖開始。沒有 ESRGAN 權重時仍可使用內建放大，不等同純 ESRGAN。放大後上限 200 萬像素、寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。</p></details>
+<label for="size-preset">常用尺寸 <span class="info"><button class="hint" type="button" aria-label="說明：size-preset">?</button><span class="hinttext" role="tooltip">預設直式 512×1024。除了方形 512×512，每個常用規格都同時提供直式與橫式（例如約 1080p 有 1088×1920 與 1920×1088），直式與橫式的像素總量相同。選取後填入寬高，寬高均為 32 倍數；標示「約」的影片規格並非精確 16:9，仍可手動修改；2K、4K 不保證 8 GB 顯卡能完成。</span></span></label><select id="size-preset"><option value="512x1024" selected>512×1024（直式，預設）</option><option value="1024x512">1024×512（橫式）</option><option value="512x512">512×512（方形）</option><option value="384x640">約 360p · 384×640（直式）</option><option value="640x384">約 360p · 640×384（橫式）</option><option value="480x864">約 480p · 480×864（直式）</option><option value="864x480">約 480p · 864×480（橫式）</option><option value="736x1280">約 720p · 736×1280（直式）</option><option value="1280x736">約 720p · 1280×736（橫式）</option><option value="1088x1920">約 1080p · 1088×1920（直式）</option><option value="1920x1088">約 1080p · 1920×1088（橫式）</option><option value="1440x2560">2K · 1440×2560（直式，高顯存）</option><option value="2560x1440">2K · 2560×1440（橫式，高顯存）</option><option value="2176x3840">約 4K · 2176×3840（直式，極高顯存）</option><option value="3840x2176">約 4K · 3840×2176（橫式，極高顯存）</option><option value="custom">自訂尺寸</option></select><p id="size-warning" class="help"></p>
+<details id="hires-fields"><summary>進階設定：Hi-res 高解析度（文字生圖＋圖生圖）</summary><label><input id="enable-hr" type="checkbox"> <span id="hr-label">啟用 Hi-res：先放大再做第二輪去噪</span></label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率</label><select id="hr-scale" disabled><option value="1">1×（同尺寸升畫質）</option><option value="1.5">1.5×</option><option value="2" selected>2×</option><option value="3">3×</option><option value="4">4×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div></div><p class="help" id="upscaler-note"></p><p class="help" id="hr-help"></p></details>
 <div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；1 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="1" required></div>
 <div><label for="seed">隨機種子 <span class="info"><button class="hint" type="button" aria-label="說明：seed">?</button><span class="hinttext" role="tooltip">-1 代表送出前自動產生一個確定的隨機種子，方便寫入檔名和重現；重試同一筆會沿用種子。指定相同整數也仍需相同模型／參數，不保證跨環境完全一致。</span></span></label><input id="seed" type="number" min="-1" max="4294967295" step="1" value="-1" required></div><div><label for="sampler">取樣器 <span class="info"><button class="hint" type="button" aria-label="說明：sampler">?</button><span class="hinttext" role="tooltip">Euler 為此介面的預設。若當前模型／伺服器不提供 Euler，請改選可用的取樣器；以實際回傳清單為準。</span></span></label><select id="sampler"><option value="">模型預設</option><option value="Euler" selected>Euler（預設）</option></select></div></div>
-<label for="viggle">Viggle Qwen-Image-2.1 Turbo LoRA（選填）</label><select id="viggle"><option value="off" selected>關閉（原本模型）</option><option value="6step">v0.2.1 r128 · 6 步（僅 Qwen-Image-2.1）</option></select><p class="help">開啟後單張任務自動使用 Euler、CFG 1、6 步及按輸出尺寸換算的官方 sigma；需要本機 fused LoRA 權重，且不支援 Hi-res 或一般去噪 Img2Img。此模型限非商業研究／評估。關閉不會套用 LoRA。</p>
+<label for="viggle">Viggle Qwen-Image-2.1 Turbo LoRA（選填）</label><select id="viggle"><option value="off" selected>關閉（原本模型）</option><option value="6step">v0.2.1 r128 · 6 步（僅 Qwen-Image-2.1）</option></select><p class="help">開啟後單張任務自動使用 Euler、CFG 1、6 步及按輸出尺寸換算的官方 sigma；需要本機 fused LoRA 權重。可與 Hi-res 或去噪 Img2Img 併用，但第二輪（Hi-res）由「第二輪步數＋去噪強度」自行推導排程，不會沿用 6 步 turbo sigma，所以該輪等同一般排程重繪。此模型限非商業研究／評估。關閉不會套用 LoRA。</p><button id="release-lora" class="secondary" type="button" disabled>♻ 釋放 LoRA 記憶體（重啟 Image Server）</button><p id="lora-memory" class="help">LoRA 一旦被伺服器套用就會常駐在執行中的行程（量化權重走 at_runtime，實測多佔數 GB）；把上面選單切回「關閉」只是下一張任務不再套用，不會歸還記憶體。偵測到常駐 LoRA 時可按此鈕重啟 server 釋放；佇列與已存圖片不受影響，但需要重新載入模型。</p>
 <label for="nsfw-lora">NSFW LoRA（常駐，可與 Viggle 同時套用） <span class="info"><button class="hint" type="button" aria-label="說明：nsfw-lora">?</button><span class="hinttext" role="tooltip">清單由伺服器 <code>/sdapi/v1/loras</code> 提供，此欄只列出檔名或名稱含 nsfw 的權重。可與 Viggle 同時套用，兩者強度各自獨立；沒有偵測到檔案時固定為「關閉」。選了但沒加入任務不會生效。</span></span></label><select id="nsfw-lora"><option value="off" selected>關閉（不套用）</option></select><div class="fields"><div><label for="nsfw-strength">NSFW LoRA 強度（0～2）</label><input id="nsfw-strength" type="number" min="0" max="2" step="0.05" value="1"></div></div><p class="help">文字生圖與 Img2Img 走 sdapi 的 <code>lora</code> 陣列送出；Viggle 開啟時兩顆會一起套用（各自 tensor 不重疊），6 步與 sigma 仍依 Viggle 設定。</p>
 <details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次，以 NSFW 欄位或 Viggle 的設定優先。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
 <p id="sampler-warning" class="help"></p><p class="help">每次加入任務，都會固定當下的描述、尺寸、步數、CFG、種子與取樣器。要換模型請回控制窗停止並重啟 server；佇列中的任務不會因此自動改參數。</p>
@@ -38,6 +38,7 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 <label for="bulk">一次貼上多筆描述（一行一筆） <span class="info"><button class="hint" type="button" aria-label="說明：bulk">?</button><span class="hinttext" role="tooltip">例如貼上 10 行描述，按「批量加入」即可排入 10 張。每一行都使用此刻上方相同的尺寸、步數、CFG、種子等設定；空白行會忽略。不要在同一筆描述內換行。</span></span></label><textarea id="bulk" placeholder="第一張的描述&#10;第二張的描述&#10;第三張的描述"></textarea><button id="add-bulk" type="button">批量加入</button></section>
 <section><h2>排程與成果</h2><div class="queue-actions"><button id="run-queue" type="button">▶ 開始／繼續</button><button id="pause-queue" class="secondary" type="button">⏸ 暫停下一張</button></div>
 <p id="queue-count" class="help"></p><p id="elapsed" role="timer" aria-live="off">尚未開始生圖</p>
+<p class="help">「中斷待確認」＝上一次生成被關頁、休眠或當機打斷，本頁不會自動重送；可按該筆的「↻ 重試」重新排入，或按「✕ 取消這筆（移除，不重送）」直接清掉。</p>
 <div class="preview" id="preview">生成後，最新圖片會顯示在這裡；PNG 會自動保存到 image-output。</div><p id="status" role="status" aria-live="polite">準備就緒。</p><div id="result" class="result"></div>
 <h3>待辦任務與提示詞（完成後自動移除）</h3><ol id="tasklist" class="tasklist"></ol>
 <p class="help">可先排好 10 筆以上，一張接一張跑，生成中也能加入任務。圖片成功寫入 image-output 才算完成；完成任務會從清單自動移除，但預覽與圖片檔案保留。瀏覽器必須保持開啟，關頁不會背景繼續；重新開啟請使用控制窗「開繁中生圖網頁」。</p></section></div>
@@ -74,17 +75,31 @@ globalThis.QueueController=class QueueController{
 };
 /*QUEUE_CORE_END*/
 const $=id=>document.getElementById(id);
+let upscalersReady=false;
+async function loadUpscalers(){
+  // 伺服器常常比網頁晚就緒（按下開網頁後它還在載入模型），所以這個函式可以被重複呼叫：
+  // 只補上缺少的選項、不重複插入，並在還沒拿到清單時於頁面明說，而不是靜默只剩內建兩種。
+  let reachable=false;
+  for(const url of ['/sdapi/v1/upscalers','/sdapi/v1/latent-upscale-modes']){
+    try{const r=await fetch(url);if(!r.ok)continue;reachable=true;const names=await r.json();
+      for(const item of names){if(!item.name||item.name==='None'||[...$('hr-upscaler').options].some(o=>o.value===item.name))continue;
+        const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.model_path?'（外部模型'+(item.scale?` ${item.scale}×`:'')+'）':'（內建）');$('hr-upscaler').append(option);}}
+    catch(e){}
+  }
+  upscalersReady=upscalersReady||reachable;
+  $('upscaler-note').textContent=upscalersReady?'':'放大方法清單尚未取得（伺服器可能還在載入模型）；連線後會自動補上，目前只有內建方法可選。';
+  return reachable;
+}
+function retryUpscalers(){
+  let tries=0;
+  const timer=setInterval(async()=>{if(upscalersReady||++tries>60){clearInterval(timer);return;}await loadUpscalers();},2000);
+}
 async function discover(){
   try{const r=await fetch('/sdapi/v1/options');if(r.ok){const d=await r.json();$('model').textContent='已載入：'+(d.sd_model_checkpoint||'未命名模型');}}
   catch(e){$('model').textContent='模型狀態尚未就緒';}
   try{const r=await fetch('/sdapi/v1/samplers');if(r.ok){const list=await r.json();let chosen=null;for(const item of list){if(!item.name)continue;if(item.name.toLowerCase()==='euler'){chosen=item.name;continue;}const option=document.createElement('option');option.value=item.name;option.textContent=item.name;$('sampler').append(option);}
     if(chosen){$('sampler').options[1].value=chosen;$('sampler').value=chosen;}else{$('sampler').options[1].remove();$('sampler').value='';$('sampler-warning').textContent='此伺服器沒有 Euler 取樣器，已切換模型預設；亦可手動選可用取樣器。';}}}catch(e){}
-  for(const url of ['/sdapi/v1/upscalers','/sdapi/v1/latent-upscale-modes']){
-    try{const r=await fetch(url);if(!r.ok)continue;const names=await r.json();
-      for(const item of names){if(!item.name||item.name==='None'||[...$('hr-upscaler').options].some(o=>o.value===item.name))continue;
-        const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.model_path?'（外部模型）':'（內建）');$('hr-upscaler').append(option);}}
-    catch(e){}
-  }
+  if(!await loadUpscalers())retryUpscalers();
   try{const r=await fetch('/sdapi/v1/loras');if(r.ok){const list=await r.json();loraCatalog=Array.isArray(list)?list.filter(item=>item&&item.path):[];}}
   catch(e){}
   renderLoraCatalog();
@@ -101,7 +116,7 @@ function updateElapsed(){const task=queue.tasks.find(t=>t.status==='running');
     const clock=document.getElementById('time-'+task.id);if(clock)clock.textContent=' · 已耗時 '+time+phase;
   }else{$('elapsed').textContent=queue.lastDurationMs!=null?'上一張耗時 '+duration(queue.lastDurationMs):'尚未開始生圖';}}
 const unsavedImages=new Map();
-let progressLabel=null,progressTimer=null,totalSteps=0;
+let progressLabel=null,progressTimer=null,totalSteps=0,loraResident=false;
 async function pollProgress(){if(!saveBase||!progressTimer)return;
   try{const r=await fetch(saveBase+'/progress?steps='+totalSteps+'&token='+encodeURIComponent(saveToken),{cache:'no-store'});
     if(r.ok){const p=await r.json();progressLabel=p.label||null;}}catch(e){}}
@@ -148,7 +163,7 @@ async function ensureMode(mode){
   for(let i=0;i<240;i++){
     const state=await modeState();
     if(state.error)throw Error('模式切換失敗：'+state.error);
-    if(!state.switching&&state.vision===vision&&state.ready)return;
+    if(!state.switching&&state.vision===vision&&state.ready){refreshLoraState().catch(()=>{});return;}
     await new Promise(resolve=>setTimeout(resolve,500));
   }
   throw Error('等待 Image Server 載入逾時；請檢查控制窗日誌');
@@ -215,6 +230,26 @@ function pngDimensions(image){
   if(width<1||width>16384||height<1||height>16384)throw Error('伺服器回傳的 PNG 尺寸不合理，無法保存');
   return [width,height];
 }
+async function submitNative(native,label){
+  const response=await fetch('/sdcpp/v1/img_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(native)});
+  if(!response.ok)throw Error(label+' 提交失敗 '+response.status+'：'+(await response.text()).slice(0,400));
+  const submitted=await response.json();
+  if(response.status!==202||!/^\/sdcpp\/v1\/jobs\/[A-Za-z0-9_-]+$/.test(submitted.poll_url||''))throw Error(label+' 未回傳有效 job 輪詢路徑');
+  for(let i=0;i<1440;i++){
+    const poll=await fetch(submitted.poll_url,{cache:'no-store'});
+    if(!poll.ok)throw Error(label+' 任務查詢失敗 '+poll.status+'：'+(await poll.text()).slice(0,400));
+    const job=await poll.json();
+    if(job.status==='completed'){
+      const image=job.result?.images?.[0]?.b64_json;
+      if(!image)throw Error(label+' 完成，但沒有回傳圖片');
+      return image;
+    }
+    if(job.status==='failed'||job.status==='cancelled'||job.status==='canceled')throw Error(label+' 失敗：'+(job.error||job.status));
+    if(job.status!=='queued'&&job.status!=='running'&&job.status!=='generating')throw Error('未知任務狀態：'+job.status);
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
+  throw Error(label+' 逾時；請查看控制窗日誌及原生 job 狀態');
+}
 async function sendImage(body,task){
   if(!saveBase)throw Error('未連接本機自動存圖服務；請從 Image 控制窗的「開繁中生圖網頁」重新開啟頁面');
   $('status').textContent='目前任務生成中；請看上方耗時計時。';
@@ -225,11 +260,10 @@ async function sendImage(body,task){
     if(body.viggleTurbo && !(await modeState()).offload)throw Error('8 GB 顯卡使用 Viggle 前，請在 Image 控制窗開啟 CPU offload 並重啟 server');
     startProgress(body.steps);
     const {mode,sourceKey,sourceKeys,maskKey,viggleTurbo,offload:legacyOffload,...requestBody}=body;
-    if(viggleTurbo && (mode==='img2img'||body.enable_hr))throw Error('Viggle 僅支援文字生圖與 Qwen Edit，不支援去噪 Img2Img／Hi-res');
     let response;
-    if(mode==='qwen_edit'||viggleTurbo){
-      const keys=mode==='qwen_edit'?(Array.isArray(sourceKeys)?sourceKeys:sourceKey?[sourceKey]:[]):[];
-      if(mode==='qwen_edit'&&(!keys.length||keys.length>10))throw Error('指令修圖需要 1～10 張參考圖；請重新加入任務');
+    if(mode==='qwen_edit'){
+      const keys=Array.isArray(sourceKeys)?sourceKeys:sourceKey?[sourceKey]:[];
+      if(!keys.length||keys.length>10)throw Error('指令修圖需要 1～10 張參考圖；請重新加入任務');
       const refs=[];
       for(const key of keys){
         const source=await loadSource(key);
@@ -238,34 +272,39 @@ async function sendImage(body,task){
       }
       const sample_params={sample_steps:body.steps,guidance:{txt_cfg:body.cfg_scale}};
       if(body.sampler_name)sample_params.sample_method=body.sampler_name.toLowerCase().replace(/\s+/g,'_');
+      const native={prompt:body.prompt,negative_prompt:body.negative_prompt||'',width:body.width,height:body.height,
+        seed:body.seed,batch_count:1,init_image:null,ref_images:refs,sample_params,output_format:'png'};
+      const loras=[...(Array.isArray(body.lora)?body.lora:[])].filter(item=>item.path!==VIGGLE_FUSED);
+      if(loras.length)native.lora=loras;
+      image=await submitNative(native,'原生修圖');
+    }else if(viggleTurbo||(mode==='img2img'&&body.hrNative)){
+      // Native path.  It carries the 6-step turbo sigmas and/or the Hi-res block; sdapi cannot
+      // express either one (img2img drops enable_hr, and custom_sigmas is only a native option).
+      let initImage=null;
+      if(mode==='img2img'){
+        if(!sourceKey)throw Error('圖生圖缺少原圖，請重新上傳並加入任務');
+        if(body.hrNative&&maskKey)throw Error('遮罩 Inpaint 與 Hi-res 不能同時使用；請關閉 Hi-res 或移除遮罩');
+        const source=await loadSource(sourceKey);
+        if(!source)throw Error('找不到佇列原圖（可能清除了瀏覽器資料）；請移除任務後重新上傳');
+        initImage=await sourceDataUrl(source);
+      }
+      const sample_params={sample_steps:body.steps,guidance:{txt_cfg:body.cfg_scale}};
+      if(body.sampler_name)sample_params.sample_method=body.sampler_name.toLowerCase().replace(/\s+/g,'_');
       if(viggleTurbo){
         sample_params.sample_steps=6;sample_params.sample_method='euler';
         sample_params.guidance={txt_cfg:1};sample_params.custom_sigmas=viggleSigmas(body.width,body.height);
       }
-      const native={prompt:body.prompt,negative_prompt:body.negative_prompt||'',width:body.width,height:body.height,
-        seed:body.seed,batch_count:1,init_image:null,ref_images:refs,sample_params,output_format:'png'};
+      const native={prompt:body.prompt||(mode==='img2img'?'the same image':''),negative_prompt:body.negative_prompt||'',
+        width:body.width,height:body.height,seed:body.seed,batch_count:1,init_image:initImage,
+        sample_params,output_format:'png'};
+      if(mode==='img2img')native.strength=body.denoising_strength;
+      if(body.hrNative||body.enable_hr)
+        native.hires={enabled:true,upscaler:body.hr_upscaler,scale:body.hr_scale,target_width:body.hr_resize_x,
+          target_height:body.hr_resize_y,steps:body.hr_steps,denoising_strength:body.hr_denoising_strength};
       const loras=[...(Array.isArray(body.lora)?body.lora:[])].filter(item=>item.path!==VIGGLE_FUSED);
       if(viggleTurbo)loras.push({path:VIGGLE_FUSED,multiplier:1});
       if(loras.length)native.lora=loras;
-      response=await fetch('/sdcpp/v1/img_gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(native)});
-      if(!response.ok)throw Error('原生修圖提交失敗 '+response.status+'：'+(await response.text()).slice(0,400));
-      const submitted=await response.json();
-      if(response.status!==202||!/^\/sdcpp\/v1\/jobs\/[A-Za-z0-9_-]+$/.test(submitted.poll_url||''))throw Error('原生修圖未回傳有效 job 輪詢路徑');
-      let completed=false;
-      for(let i=0;i<1440;i++){
-        const poll=await fetch(submitted.poll_url,{cache:'no-store'});
-        if(!poll.ok)throw Error('修圖任務查詢失敗 '+poll.status+'：'+(await poll.text()).slice(0,400));
-        const job=await poll.json();
-        if(job.status==='completed'){
-          image=job.result?.images?.[0]?.b64_json;
-          if(!image)throw Error('原生修圖完成，但沒有回傳圖片');
-          completed=true;break;
-        }
-        if(job.status==='failed'||job.status==='cancelled'||job.status==='canceled')throw Error('原生修圖失敗：'+(job.error||job.status));
-        if(job.status!=='queued'&&job.status!=='running'&&job.status!=='generating')throw Error('未知修圖任務狀態：'+job.status);
-        await new Promise(resolve=>setTimeout(resolve,500));
-      }
-      if(!completed)throw Error('原生修圖逾時；請查看控制窗日誌及原生 job 狀態');
+      image=await submitNative(native,viggleTurbo?'原生 6 步任務':'原生圖生圖 Hi-res');
     }else{
       const endpoint=mode==='img2img'?'/sdapi/v1/img2img':'/sdapi/v1/txt2img';
       if(!Array.isArray(requestBody.lora)||!requestBody.lora.length)delete requestBody.lora;
@@ -280,7 +319,7 @@ async function sendImage(body,task){
       }
       response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody)});
     }
-    if(mode!=='qwen_edit'&&!viggleTurbo){
+    if(mode!=='qwen_edit'&&!viggleTurbo&&!body.hrNative){
       if(!response.ok)throw Error('生圖伺服器回應 '+response.status+'：'+(await response.text()).slice(0,400));
       const data=await response.json();image=data.images?.[0];
     }
@@ -294,10 +333,46 @@ async function sendImage(body,task){
   catch(e){throw Error('無法連接本機存圖服務；本頁仍保留這張圖片，按重試會先嘗試保存，不會重新生圖');}
   const saved=await saveResponse.json();if(!saveResponse.ok||!saved.filename)throw Error('自動保存失敗：'+(saved.error||saveResponse.status)+'；按重試會先嘗試保存');
   task.file=saved.filename;unsavedImages.delete(task.id);
+  if(body.viggleTurbo||(Array.isArray(body.lora)&&body.lora.length))refreshLoraState().catch(()=>{});
   showImage(task.file);$('status').textContent='圖片已自動保存；將依序繼續。';
   return {saved:true};
 }
 const queue=new QueueController(localStorage,sendImage,renderQueue);
+async function waitServerReady(){
+  for(let i=0;i<240;i++){
+    const state=await modeState();
+    if(state.error)throw Error('重新啟動失敗：'+state.error);
+    if(!state.switching&&state.ready)return state;
+    await new Promise(resolve=>setTimeout(resolve,500));
+  }
+  throw Error('等待 Image Server 重新載入逾時；請檢查控制窗日誌');
+}
+async function refreshLoraState(){
+  if(!saveBase)return;
+  try{
+    const state=await modeState();loraResident=!!state.lora_resident;
+    $('release-lora').disabled=!loraResident||queue.running;
+    $('lora-memory').textContent=loraResident
+      ?(queue.running
+        ?'偵測到這個 Image Server 行程已經套用過 LoRA（權重常駐）；目前有任務在生成，等這張完成或按「暫停下一張」後就能按左邊按鈕重啟 server 釋放。'
+        :'偵測到這個 Image Server 行程已經套用過 LoRA（權重常駐在行程裡）；把上面的選單切回「關閉」不會歸還記憶體，要按左邊按鈕重啟 server 才會釋放。')
+      :'目前這個 Image Server 行程沒有套用過 LoRA，切回「關閉」後不需要額外動作（按鈕要等本行程真的套用過 LoRA 才會亮）。';
+  }catch(e){loraResident=false;$('release-lora').disabled=true;
+    $('lora-memory').textContent='讀不到控制窗的存圖服務（'+e.message+'）：若控制窗是在這頁開啟之後才啟動／重啟，或控制窗已關閉，請回控制窗按「🌐 開繁中生圖網頁」重新開啟本頁。';}
+}
+$('release-lora').addEventListener('click',async()=>{
+  if(queue.running){$('status').textContent='目前有任務在生成；請等這張完成或按「暫停下一張」後再釋放 LoRA。';return;}
+  $('release-lora').disabled=true;
+  $('lora-memory').textContent='正在重新啟動 Image Server 以釋放 LoRA 記憶體；模型重新載入需要一段時間…';
+  try{
+    const r=await fetch(saveBase+'/restart',{method:'POST',headers:{'Content-Type':'application/json','X-GGUFRun-Token':saveToken},body:JSON.stringify({reason:'lora'})});
+    const result=await r.json();if(!r.ok)throw Error(result.status||'無法重新啟動 Image Server');
+    await waitServerReady();
+    $('status').textContent='LoRA 記憶體已釋放；Image Server 已重新載入，佇列與已存圖片不受影響。';
+  }catch(e){$('status').textContent=e.message;}
+  refreshLoraState().catch(()=>{});
+});
+if(saveBase)refreshLoraState().catch(()=>{});
 function showImage(file){if(!file||!saveBase)return;
   const img=document.createElement('img');img.crossOrigin='anonymous';img.src=saveBase+'/image/'+encodeURIComponent(file)+'?token='+encodeURIComponent(saveToken);img.alt='最新生成圖片';
   img.onerror=()=>{$('status').textContent='預覽無法讀取；請確認 Image 控制窗仍開啟，並在 image-output 找到 '+file;};
@@ -329,7 +404,7 @@ function renderQueue(){const list=$('tasklist');list.replaceChildren();
     const row=document.createElement('li');const head=document.createElement('div');head.className='task-head';
     const title=document.createElement('strong');title.textContent='目前 #'+(index+1)+' · '+t.body.prompt;
     const status=document.createElement('span');status.textContent=stateNames[t.status]||t.status;head.append(title,status);row.append(head);
-    const summary=document.createElement('p');summary.className='task-summary';summary.textContent=(t.body.mode==='img2img'?'Img2Img 去噪 · 改動 '+t.body.denoising_strength+' · ':t.body.mode==='qwen_edit'?'Qwen Edit 指令修圖 · ':'文字生圖 · ')+t.body.width+'×'+t.body.height+' · '+t.body.steps+' 步 · CFG '+t.body.cfg_scale+' · 種子 '+t.body.seed+(t.body.lora?.length?' · LoRA '+t.body.lora.map(item=>String(item.path).replace(/\.[^.]+$/,'')+'@'+item.multiplier).join(', '):'')+(t.durationMs!=null?' · 耗時 '+duration(t.durationMs):'');
+    const summary=document.createElement('p');summary.className='task-summary';summary.textContent=(t.body.mode==='img2img'?'Img2Img 去噪 · 改動 '+t.body.denoising_strength+' · ':t.body.mode==='qwen_edit'?'Qwen Edit 指令修圖 · ':'文字生圖 · ')+t.body.width+'×'+t.body.height+' · '+t.body.steps+' 步 · CFG '+t.body.cfg_scale+' · 種子 '+t.body.seed+(t.body.enable_hr||t.body.hrNative?' · Hi-res '+t.body.hr_upscaler+' '+t.body.hr_scale+'× → '+t.body.hr_resize_x+'×'+t.body.hr_resize_y:'')+(t.body.lora?.length?' · LoRA '+t.body.lora.map(item=>String(item.path).replace(/\.[^.]+$/,'')+'@'+item.multiplier).join(', '):'')+(t.durationMs!=null?' · 耗時 '+duration(t.durationMs):'');
     if(t.status==='running'){const clock=document.createElement('span');clock.id='time-'+t.id;clock.textContent=' · 已耗時 '+duration(Date.now()-t.startedAt);summary.append(clock);}row.append(summary);
     renderTaskRefs(row,t.body);
     if(t.file){const file=document.createElement('p');file.className='task-summary';file.textContent='已保存：image-output\\'+t.file;row.append(file);}
@@ -338,11 +413,17 @@ function renderQueue(){const list=$('tasklist');list.replaceChildren();
     if(t.status==='pending'){actions.append(actionButton('↑ 提前',()=>queue.move(t.id,-1)),actionButton('↓ 延後',()=>queue.move(t.id,1)));}
     if(t.status==='failed'||t.status==='interrupted')actions.append(actionButton('↻ 重試（可能重複生成）',()=>queue.retry(t.id)));
     if(t.file)actions.append(actionButton('檢視已保存圖片',()=>showImage(t.file)));
-    if(t.status!=='running')actions.append(actionButton('移除紀錄',()=>{queue.remove(t.id);unsavedImages.delete(t.id);sweepSources().catch(()=>{});}));
+    if(t.status!=='running'){
+      // 「取消」 is the word people look for on a task that will not be sent again.
+      const label=t.status==='interrupted'?'✕ 取消這筆（移除，不重送）'
+                 :t.status==='failed'?'✕ 取消／移除失敗紀錄':'✕ 移除紀錄';
+      actions.append(actionButton(label,()=>{queue.remove(t.id);unsavedImages.delete(t.id);sweepSources().catch(()=>{});}));
+    }
     row.append(actions);list.append(row);
   }
   $('queue-count').textContent='待執行 '+counts.pending+'｜生成中 '+counts.running+'｜失敗 '+counts.failed+'｜中斷待確認 '+counts.interrupted;
   $('pause-queue').disabled=!queue.running;
+  $('release-lora').disabled=!loraResident||queue.running;
   $('run-queue').disabled=queue.running||!counts.pending;
   updateElapsed();
 }
@@ -352,19 +433,21 @@ function draftBody(){
   if($('sampler').value)body.sampler_name=$('sampler').value;
   if($('mode').value==='qwen_edit')body.mode='qwen_edit';
   if($('mode').value==='img2img'){
-    if(!$('denoising-strength').checkValidity())throw Error('改動強度請填 0.01～1');
+    if(!$('denoising-strength').checkValidity())throw Error('改動強度請填 0～1（0 表示第一段不重畫，只做 Hi-res）');
     body.mode='img2img';body.denoising_strength=Number($('denoising-strength').value);
   }
-  if($('mode').value==='txt2img'&&$('enable-hr').checked){
+  const hrMode=$('mode').value;
+  if((hrMode==='txt2img'||hrMode==='img2img')&&$('enable-hr').checked){
     if(!$('hr-steps').checkValidity()||!$('hr-denoise').checkValidity())throw Error('請檢查 Hi-res 第二輪步數／去噪強度');
     const scale=Number($('hr-scale').value),w=Math.round(body.width*scale),h=Math.round(body.height*scale);
-    if(w>4096||h>4096||w*h>2_000_000||w%32||h%32)throw Error('Hi-res 輸出上限 200 萬像素，放大後寬高必須為 32 的倍數；請調整底圖尺寸或倍率');
-    body.enable_hr=true;body.hr_upscaler=$('hr-upscaler').value;body.hr_scale=scale;
+    if(w%32||h%32)throw Error('放大後寬高必須為 32 的倍數；請調整底圖尺寸或倍率');
+    body.hr_upscaler=$('hr-upscaler').value;body.hr_scale=scale;
     body.hr_resize_x=w;body.hr_resize_y=h;body.hr_steps=Number($('hr-steps').value);
-    body.denoising_strength=Number($('hr-denoise').value);
+    body.hr_denoising_strength=Number($('hr-denoise').value);
+    if(hrMode==='txt2img'){body.enable_hr=true;body.denoising_strength=body.hr_denoising_strength;}
+    else body.hrNative=true;
   }
   if($('viggle').value==='6step'){
-    if(body.mode==='img2img'||body.enable_hr)throw Error('Viggle 不支援去噪 Img2Img 或 Hi-res；請關閉其中一項');
     viggleSigmas(body.width,body.height);
     body.viggleTurbo=true;body.steps=6;body.cfg_scale=1;body.sampler_name='Euler';
   }
@@ -407,7 +490,7 @@ $('mode').addEventListener('change',async()=>{
   $('source-info').textContent=current==='qwen_edit'?'參考圖 0 張；可逐張移除。已加入佇列的任務不受影響。': '原圖暫存在此瀏覽器；改選不影響佇列。';
   if(current==='qwen_edit')renderEditRefs();
   $('denoise-fields').hidden=current!=='img2img';
-  $('hires-fields').hidden=current!=='txt2img';
+  $('hires-fields').hidden=!(current==='txt2img'||current==='img2img');
   syncHrOptions();
   $('edit-help').hidden=current!=='qwen_edit';
   try{await ensureMode(current);$('status').textContent=current==='qwen_edit'?'Qwen 視覺權重已載入；可加入修圖任務。':'視覺權重已卸載；可使用文字生圖或去噪圖生圖。';}
@@ -505,8 +588,18 @@ function syncSizePreset(){const value=$('width').value+'x'+$('height').value;
 }
 $('size-preset').addEventListener('change',()=>{const value=$('size-preset').value;if(value==='custom')return;
   const [w,h]=value.split('x');$('width').value=w;$('height').value=h;syncSizePreset();});
-function syncHrOptions(){$('hr-options').querySelectorAll('select,input').forEach(element=>{element.disabled=!$('enable-hr').checked;});}
+function syncHrOptions(){
+  const mode=$('mode').value;
+  $('hr-options').querySelectorAll('select,input').forEach(element=>{element.disabled=!$('enable-hr').checked;});
+  $('hr-label').textContent=mode==='img2img'?'啟用 Hi-res：第一段圖片重畫 → 放大 → 第二輪低去噪':'啟用 Hi-res：先放大再做第二輪去噪';
+  $('hr-help').innerHTML=mode==='img2img'
+    ?'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。圖生圖的 <code>/sdapi/v1/img2img</code> 在 sd-server 端會忽略 <code>enable_hr</code>（原始碼只有文字生圖那條會生效），所以此模式改走原生 <code>/sdcpp/v1/img_gen</code>：同一個請求帶 <code>init_image</code>、第一段強度（上面的「改動強度」）與 <code>hires</code>，伺服器先做第一段圖片重畫，再放大，最後以「第二輪去噪強度」重繪。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型；模型原生倍率以外的目標尺寸會被最近鄰縮放，所以倍率建議直接選模型的原生倍率。遮罩 Inpaint 與 Hi-res 不能同時使用。預設關閉，時間與 VRAM 都會明顯增加；放大後寬高須為 32 的倍數。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。'
+    :'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。文字生圖走 sd-server 原生 <code>enable_hr</code>：先放大，再用「第二輪去噪強度」重繪一次。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型（例如 RealESRGAN_x4plus_anime_6B 原生就是 4×，倍率選 4× 才不會被最近鄰縮掉細節）。預設關閉，會增加時間與 VRAM；8GB 建議從小圖開始。放大後寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。';
+}
 $('enable-hr').addEventListener('change',syncHrOptions);
+// 伺服器比網頁晚就緒時的另一個補抓時機：展開 Hi-res 區塊、或勾選「啟用 Hi-res」時。
+$('enable-hr').addEventListener('change',()=>{if($('enable-hr').checked&&!upscalersReady)loadUpscalers();});
+$('hires-fields').addEventListener('toggle',()=>{if($('hires-fields').open&&!upscalersReady)loadUpscalers();});
 for(const id of ['width','height'])$(id).addEventListener('input',syncSizePreset);
 syncSizePreset();
 syncHrOptions();

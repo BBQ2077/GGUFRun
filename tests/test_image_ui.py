@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import os
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -12,6 +14,42 @@ MAIN_SPEC.loader.exec_module(gguf_ui)
 SPEC = importlib.util.spec_from_file_location('image_ui', ROOT / 'image-ui.py')
 image_ui = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(image_ui)
+
+
+_SHARED_ROOT = None
+
+
+def hidden_root():
+    """The one Tk root the whole test run shares.
+
+    A run used to build a fresh, mapped Tk window for every test that needed real
+    widgets -- 21 windows flashing open and shut, because ImageApp.close() tears
+    its root down. Here the root is created once and handed out again on every
+    call: its children are dropped between tests instead of the window itself, so
+    the run opens exactly one window and closes it when the process exits. Alpha
+    0 keeps that window mapped (winfo_ismapped / winfo_rooty assertions still
+    hold) but paints nothing on screen.
+    """
+    global _SHARED_ROOT
+    import tkinter as tk
+
+    def drop_children():
+        for child in _SHARED_ROOT.winfo_children():
+            try:
+                child.destroy()
+            except tk.TclError:
+                pass
+
+    if _SHARED_ROOT is None or not _SHARED_ROOT.winfo_exists():
+        _SHARED_ROOT = tk.Tk()
+        try:
+            _SHARED_ROOT.attributes('-alpha', 0.0)
+        except tk.TclError:
+            pass
+        _SHARED_ROOT.destroy = drop_children  # never tear the shared window down
+    else:
+        drop_children()
+    return _SHARED_ROOT
 
 
 class LayoutTests(unittest.TestCase):
@@ -132,12 +170,18 @@ class ImageRuntimeTests(unittest.TestCase):
                 image_ui.build_server_cmd(ROOT, 18436, cache_mode='spectrum', spectrum_w=value)
 
     def test_other_cache_modes_never_receive_w(self):
-        """W is Spectrum-only: other accelerators must not leak the option."""
+        """W is Spectrum-only: other accelerators must not leak the w= option.
+
+        sd-cli documents threshold=/warmup= as shared by dbcache/taylorseer/cache-dit,
+        so those modes may legitimately carry --cache-option -- but never a spectrum w=.
+        """
         for mode in ('easycache', 'taylorseer', 'cache-dit'):
             with self.subTest(mode=mode):
                 cmd = image_ui.build_server_cmd(ROOT, 18436, cache_mode=mode)
                 self.assertEqual(cmd[cmd.index('--cache-mode') + 1], mode)
-                self.assertNotIn('--cache-option', cmd)
+                options = cmd[cmd.index('--cache-option') + 1] if '--cache-option' in cmd else ''
+                keys = [kv.split('=')[0] for kv in options.split(',') if kv]
+                self.assertNotIn('w', keys)
         for mode in image_ui.CACHE_MODES:
             with self.subTest(mode=mode):
                 cmd = image_ui.build_server_cmd(ROOT, 18436, cache_mode=mode)
@@ -198,12 +242,13 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'SETTINGS', settings), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     app.offload.set(False)
                     self.assertEqual(app.spectrum_w.get(), '0.10')
-                    self.assertEqual(str(app.spectrum_w_entry['state']), 'disabled')
+                    # Fields stay editable in every mode (no lockout); only the hint changes.
+                    self.assertEqual(str(app.spectrum_w_entry['state']), 'normal')
                     app.cache_mode.set('spectrum')
                     self.assertEqual(str(app.spectrum_w_entry['state']), 'normal')
                     app.spectrum_w.set('0.05')
@@ -213,11 +258,12 @@ class ImageRuntimeTests(unittest.TestCase):
                     self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['spectrum_w'], '0.05')
                     app.stop()
                     app.cache_mode.set('taylorseer')
-                    self.assertEqual(str(app.spectrum_w_entry['state']), 'disabled')
+                    self.assertEqual(str(app.spectrum_w_entry['state']), 'normal')
                     app.start()
                     cmd = popen.call_args.args[0]
                     self.assertEqual(cmd[cmd.index('--cache-mode') + 1], 'taylorseer')
-                    self.assertNotIn('--cache-option', cmd)
+                    opts = cmd[cmd.index('--cache-option') + 1] if '--cache-option' in cmd else ''
+                    self.assertNotIn('w', [kv.split('=')[0] for kv in opts.split(',') if kv])
                 finally:
                     if 'app' in locals():
                         app.close()
@@ -235,7 +281,7 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'SETTINGS', settings), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui.subprocess, 'Popen') as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     app.offload.set(False)
@@ -272,7 +318,7 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'SETTINGS', settings), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui.subprocess, 'Popen', side_effect=[fake_proc, replacement, plain_proc]) as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     app.models['llm_vision'].set(str(vision))
@@ -315,7 +361,8 @@ class ImageRuntimeTests(unittest.TestCase):
                     self.assertNotIn('--offload-to-cpu', popen.call_args.args[0])
                     self.assertFalse(app.mode_status()['offload'])
                     app.stop()
-                    self.assertIsNone(app.save_service)
+                    # The page holds this service's port and token: a restart must not drop it.
+                    self.assertIs(app.save_service, saver)
                 finally:
                     if 'app' in locals():
                         app.close()
@@ -335,7 +382,7 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui, 'supports_conditioning_cache', return_value=True), \
                  mock.patch.object(image_ui.subprocess, 'Popen') as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     self.assertFalse(app.diffusion_fa.get())
@@ -384,7 +431,7 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'SETTINGS', path), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui.subprocess, 'Popen') as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     self.assertEqual(app.conditioning_cache_size.get(), '12')
@@ -411,7 +458,7 @@ class ImageRuntimeTests(unittest.TestCase):
                  mock.patch.object(image_ui, 'port_busy', return_value=False), \
                  mock.patch.object(image_ui, 'supports_conditioning_cache', return_value=False), \
                  mock.patch.object(image_ui.subprocess, 'Popen') as popen:
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     app.conditioning_cache_size.set('4')
@@ -469,7 +516,8 @@ class ImageRuntimeTests(unittest.TestCase):
             self.assertEqual(text, '短')
             self.assertEqual(position, len('短'.encode('utf-8')))
 
-    def test_image_controller_starts_and_stops_save_service(self):
+    def test_image_controller_keeps_the_save_service_alive_across_a_restart(self):
+        """The page carries the save service's port and token, so /mode must survive a restart."""
         import tkinter as tk
         with tempfile.TemporaryDirectory() as td:
             base = pathlib.Path(td)
@@ -480,17 +528,22 @@ class ImageRuntimeTests(unittest.TestCase):
                 proc = popen.return_value
                 proc.poll.return_value = 0
                 proc.pid = 1234
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     app.start()
-                    self.assertIsNotNone(app.save_service)
-                    self.assertTrue(app.save_service.url.startswith('http://127.0.0.1:'))
+                    service = app.save_service
+                    self.assertIsNotNone(service)
+                    self.assertTrue(service.url.startswith('http://127.0.0.1:'))
                     app.stop()
+                    self.assertIs(app.save_service, service)  # open page keeps working
+                    app.start()  # ...including after the server comes back
+                    self.assertIs(app.save_service, service)
+                    self.assertEqual((app.save_service.httpd.server_port, app.save_service.token),
+                                     (service.httpd.server_port, service.token))
+                    app.close()
                     self.assertIsNone(app.save_service)
                 finally:
-                    if 'app' in locals():
-                        app.close()
                     try:
                         root.destroy()
                     except tk.TclError:
@@ -506,7 +559,7 @@ class ImageRuntimeTests(unittest.TestCase):
             with mock.patch.object(image_ui, 'BASE', base), \
                  mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False):
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     self.assertEqual(path.read_text(encoding='utf-8'), '')
@@ -528,7 +581,7 @@ class ImageRuntimeTests(unittest.TestCase):
             with mock.patch.object(image_ui, 'BASE', base), \
                  mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
                  mock.patch.object(image_ui, 'port_busy', return_value=True):
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     with path.open('a', encoding='utf-8') as f:
@@ -550,7 +603,7 @@ class ImageRuntimeTests(unittest.TestCase):
             with mock.patch.object(image_ui, 'BASE', base), \
                  mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
                  mock.patch.object(image_ui, 'port_busy', return_value=False):
-                root = tk.Tk()
+                root = hidden_root()
                 try:
                     app = image_ui.ImageApp(root)
                     path = base / 'image-output/server.log'
@@ -573,7 +626,7 @@ class ImageRuntimeTests(unittest.TestCase):
     def test_log_visible_inside_image_controller(self):
         import tkinter as tk
         with tempfile.TemporaryDirectory() as td, mock.patch.object(image_ui, 'BASE', pathlib.Path(td)), mock.patch.object(image_ui, 'SETTINGS', pathlib.Path(td) / 'image-settings.json'):
-            root = tk.Tk()
+            root = hidden_root()
             try:
                 app = image_ui.ImageApp(root)
                 root.update()
@@ -594,8 +647,13 @@ class ImageRuntimeTests(unittest.TestCase):
     def test_quick_sizes_defaults_and_clean_elapsed_label(self):
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
         for fragment in ('id="size-preset"', 'value="512x1024" selected',
-                         '1024×512', '512×1024', '640×384', '864×480', '1280×736',
-                         '1920×1088', '2560×1440', '3840×2176',
+                         '512×1024（直式，預設）', '1024×512（橫式）', '512×512（方形）',
+                         '約 360p · 384×640（直式）', '約 360p · 640×384（橫式）',
+                         '約 480p · 480×864（直式）', '約 480p · 864×480（橫式）',
+                         '約 720p · 736×1280（直式）', '約 720p · 1280×736（橫式）',
+                         '約 1080p · 1088×1920（直式）', '約 1080p · 1920×1088（橫式）',
+                         '2K · 1440×2560（直式，高顯存）', '2K · 2560×1440（橫式，高顯存）',
+                         '約 4K · 2176×3840（直式，極高顯存）', '約 4K · 3840×2176（橫式，極高顯存）',
                          'id="steps" type="number" min="1" max="150" value="20"',
                          'id="cfg" type="number" min="0" max="30" step="0.1" value="1"'):
             self.assertIn(fragment, html)
@@ -604,11 +662,15 @@ class ImageRuntimeTests(unittest.TestCase):
     def test_quick_sizes_are_32_aligned_and_custom_inputs_step_by_32(self):
         import re
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
-        values = re.findall(r'<option value="(\d+)x(\d+)"', html)
-        self.assertGreaterEqual(len(values), 9)
+        values = [(int(w), int(h)) for w, h in re.findall(r'<option value="(\d+)x(\d+)"', html)]
+        self.assertGreaterEqual(len(values), 15)
         for w, h in values:
-            self.assertEqual(int(w) % 32, 0, (w, h))
-            self.assertEqual(int(h) % 32, 0, (w, h))
+            self.assertEqual(w % 32, 0, (w, h))
+            self.assertEqual(h % 32, 0, (w, h))
+        # 每個常用規格都要有直式與橫式：橫式就是這組數字的轉置（方形與 512×1024 那組本來就成對）。
+        for w, h in values:
+            self.assertIn((h, w), values, f'缺少 {h}×{w}：常用規格必須同時提供直式與橫式')
+        self.assertEqual(len(values), len(set(values)), '尺寸選項有重複')
         for name in ('width', 'height'):
             self.assertRegex(html, rf'id="{name}" type="number" min="64" max="4096" step="32"')
         self.assertIn('value="1920x1088"', html)
@@ -717,6 +779,772 @@ class ImageRuntimeTests(unittest.TestCase):
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
         for label in ('批量加入', '開始／繼續', '暫停下一張', '待執行', '中斷待確認', 'queue.start()', 'queue.pause()'):
             self.assertIn(label, html)
+
+
+class ExtraArgsTests(unittest.TestCase):
+    """可選「額外指令」欄位、「保留顯存」數字（預設 2 GiB，送出 --max-vram -N）與「停用 prefix cache」的啟動行為。"""
+
+    def test_extra_args_are_optional_and_appended_verbatim(self):
+        plain = image_ui.build_server_cmd(ROOT, 18436)
+        self.assertEqual(image_ui.split_extra_args(''), [])
+        self.assertEqual(image_ui.split_extra_args('   '), [])
+        self.assertNotIn('--lora-apply-mode', plain)
+        extra = ['--lora-apply-mode', 'immediately', '-t', '6']
+        cmd = image_ui.build_server_cmd(ROOT, 18436, extra_args='--lora-apply-mode immediately -t 6')
+        self.assertEqual(cmd, plain + extra)
+        self.assertEqual(image_ui.build_server_cmd(ROOT, 18436, extra_args=None), plain)
+
+    def test_quoted_extra_values_stay_one_token(self):
+        self.assertEqual(image_ui.split_extra_args('--embd-dir "D:/my models/emb"'),
+                         ['--embd-dir', 'D:/my models/emb'])
+        self.assertEqual(image_ui.split_extra_args("--embd-dir 'D:/my models/emb'"),
+                         ['--embd-dir', 'D:/my models/emb'])
+        self.assertEqual(image_ui.split_extra_args('--threads 6   --mmap'), ['--threads', '6', '--mmap'])
+
+    def test_malformed_or_window_managed_extra_args_are_refused(self):
+        long_text = 'x' * (image_ui.MAX_EXTRA_ARGS + 1)
+        too_many = ' '.join(['--mmap'] * (image_ui.MAX_EXTRA_TOKENS + 1))
+        for text in ('"D:/unterminated', '--listen-port 18437', '--offload-to-cpu',
+                     '--serve-html-path D:/x.html', '--vae D:/vae.safetensors', long_text, too_many):
+            with self.subTest(text=text[:40]), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, extra_args=text)
+        for value in (6, ['--mmap'], True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                image_ui.split_extra_args(value)
+
+    def test_vram_reserve_number_is_editable_and_defaults_to_no_flag(self):
+        self.assertEqual(image_ui.MAX_VRAM_RESERVE_DEFAULT, 0)
+        self.assertNotIn('--max-vram', image_ui.build_server_cmd(ROOT, 18436))
+        self.assertNotIn('--max-vram', image_ui.build_server_cmd(ROOT, 18436, max_vram_reserve=0))
+        for number, flag in ((1, '-1'), (2, '-2'), (5, '-5'), ('12', '-12'), (16, '-16'),
+                             (1.5, '-1.5'), ('0.5', '-0.5'), (2.25, '-2.25'), ('3.0', '-3')):
+            with self.subTest(number=number):
+                cmd = image_ui.build_server_cmd(ROOT, 18436, max_vram_reserve=number)
+                self.assertEqual(cmd[-2:], ['--max-vram', flag])
+        # The runtime parses the budget as a float, so a fractional reserve is legal on its side.
+        for bad in ('yes', True, False, -1, 17, 16.5, '', None, ' 2', '2.', '.5', '1.234', '1,5'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, max_vram_reserve=bad)
+        with self.assertRaises(ValueError):
+            image_ui.build_server_cmd(ROOT, 18436, max_vram_reserve=2, extra_args='--max-vram 6')
+        # The window's own default reaches the launch command through the settings snapshot.
+        self.assertNotIn('--max-vram', image_ui.build_cmd_from_settings(ROOT, 18436, {}))
+        # Legacy on/off settings migrate: on keeps the 1 GiB it used to mean, off adopts the new default.
+        self.assertEqual(image_ui.build_cmd_from_settings(
+            ROOT, 18436, {'max_vram_reserve': True})[-2:], ['--max-vram', '-1'])
+        self.assertEqual(image_ui.normalise_vram_reserve(False), 0)
+        self.assertEqual(image_ui.normalise_vram_reserve('4'), 4)
+        self.assertEqual(image_ui.normalise_vram_reserve('4.0'), 4)   # integral decimals stay ints
+        self.assertEqual(image_ui.normalise_vram_reserve('1.5'), 1.5)
+        self.assertEqual(image_ui.normalise_vram_reserve('junk'), 0)
+
+    def test_vae_cpu_and_vae_tiling_checkboxes_reach_the_launch_command(self):
+        """--backend vae=cpu is the runtime's replacement for the deprecated --vae-on-cpu."""
+        self.assertNotIn('--backend', image_ui.build_server_cmd(ROOT, 18436))
+        self.assertNotIn('--vae-tiling', image_ui.build_server_cmd(ROOT, 18436))
+        self.assertEqual(image_ui.VAE_CPU_FLAG, ('--backend', 'vae=cpu'))
+        self.assertEqual(image_ui.VAE_TILING_FLAG, '--vae-tiling')
+        cpu = image_ui.build_server_cmd(ROOT, 18436, vae_on_cpu=True)
+        self.assertEqual(cpu[cpu.index('--backend'):cpu.index('--backend') + 2], ['--backend', 'vae=cpu'])
+        self.assertEqual(image_ui.build_server_cmd(ROOT, 18436, vae_tiling=True)[-1], '--vae-tiling')
+        both = image_ui.build_server_cmd(ROOT, 18436, vae_on_cpu=True, vae_tiling=True)
+        self.assertEqual(both[-3:], ['--backend', 'vae=cpu', '--vae-tiling'])
+        for bad in ('yes', 1, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, vae_on_cpu=bad)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, vae_tiling=bad)
+        # Free-form args may still carry them by hand, but never twice at the same time.
+        self.assertIn('--backend', image_ui.build_server_cmd(ROOT, 18436, extra_args='--backend clip=cpu'))
+        self.assertIn('--vae-tiling', image_ui.build_server_cmd(ROOT, 18436, extra_args='--vae-tiling'))
+        for extra in ('--backend clip=cpu', '--vae-on-cpu'):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, vae_on_cpu=True, extra_args=extra)
+        with self.assertRaises(ValueError):
+            image_ui.build_server_cmd(ROOT, 18436, vae_tiling=True, extra_args='--vae-tiling')
+        # The mode switch reuses the saved snapshot, so both flags must survive it.
+        self.assertEqual(image_ui.build_cmd_from_settings(
+            ROOT, 18436, {'vae_on_cpu': True, 'vae_tiling': True})[-3:],
+            ['--backend', 'vae=cpu', '--vae-tiling'])
+
+    def test_vae_tiling_defaults_on_unless_the_saved_settings_turn_it_off(self):
+        """分塊解碼預設開啟：沒有存檔、或舊存檔缺這個欄位時都要送 --vae-tiling。"""
+        import tkinter as tk
+        self.assertIn('--vae-tiling', image_ui.build_cmd_from_settings(ROOT, 18436, {}))
+        self.assertNotIn('--vae-tiling', image_ui.build_cmd_from_settings(ROOT, 18436, {'vae_tiling': False}))
+        self.assertIn('--vae-tiling', image_ui.build_cmd_from_settings(ROOT, 18436, {'vae_tiling': True}))
+
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            settings = base / 'image-settings.json'
+            fake = mock.Mock(pid=222)
+            fake.poll.return_value = None
+
+            def launch(saved):
+                """Start the window against one saved settings file; return (checkbox, command, written)."""
+                settings.write_text(json.dumps(saved), encoding='utf-8')
+                with mock.patch.object(image_ui, 'BASE', base), \
+                     mock.patch.object(image_ui, 'SETTINGS', settings), \
+                     mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                     mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
+                    root = hidden_root()
+                    app = image_ui.ImageApp(root)
+                    try:
+                        app.start()
+                        return (app.vae_tiling.get(), popen.call_args.args[0],
+                                json.loads(settings.read_text(encoding='utf-8')))
+                    finally:
+                        app.close()
+                        try:
+                            root.destroy()
+                        except tk.TclError:
+                            pass
+
+            checked, cmd, written = launch({})                   # 舊存檔：沒有這個欄位
+            self.assertIs(checked, True)
+            self.assertIn('--vae-tiling', cmd)
+            self.assertIs(written['vae_tiling'], True)
+            checked, cmd, written = launch({'vae_tiling': False})  # 使用者明確取消：尊重它
+            self.assertIs(checked, False)
+            self.assertNotIn('--vae-tiling', cmd)
+            self.assertIs(written['vae_tiling'], False)
+
+    def test_hand_written_vae_flags_move_into_the_checkboxes(self):
+        """Old free-form spellings are lifted into the new checkboxes instead of being rejected."""
+        migrate = image_ui.migrate_vae_flags
+        self.assertEqual(migrate('--vae-tiling'), ('', False, True))
+        self.assertEqual(migrate('--vae-tiling --auto-fit off'), ('--auto-fit off', False, True))
+        self.assertEqual(migrate('--backend vae=cpu'), ('', True, False))
+        self.assertEqual(migrate('--backend=vae=cpu --vae-on-cpu'), ('', True, False))
+        self.assertEqual(migrate('--backend clip=cpu'), ('--backend clip=cpu', False, False))
+        self.assertEqual(migrate('--auto-fit off "a b"'), ('--auto-fit off "a b"', False, False))
+        self.assertEqual(migrate(None), ('', False, False))
+        self.assertEqual(migrate(''), ('', False, False))
+
+    def test_hires_upscaler_directory_reaches_the_launch_command(self):
+        """ESRGAN/Real-ESRGAN weights are found through a directory flag, so it must be wired."""
+        self.assertEqual(image_ui.HIRES_UPSCALERS_DIR_FLAG, '--hires-upscalers-dir')
+        self.assertEqual(image_ui.HIRES_UPSCALERS_DIR_DEFAULT, 'IMAGE-MODELS/upscalers')
+        self.assertNotIn('--hires-upscalers-dir', image_ui.build_server_cmd(ROOT, 18436))
+        self.assertNotIn('--hires-upscalers-dir', image_ui.build_cmd_from_settings(ROOT, 18436, {}))
+        # Relative values follow the same project-root rule as the model fields.
+        relative = image_ui.build_server_cmd(ROOT, 18436, hires_upscalers_dir='assets')
+        self.assertEqual(relative[-2:], ['--hires-upscalers-dir', str(ROOT / 'assets')])
+        with tempfile.TemporaryDirectory() as td:
+            upscalers = pathlib.Path(td) / 'upscalers'
+            upscalers.mkdir()
+            cmd = image_ui.build_server_cmd(ROOT, 18436, hires_upscalers_dir=str(upscalers))
+            self.assertEqual(cmd[-2:], ['--hires-upscalers-dir', str(upscalers)])
+            snapshot = image_ui.build_cmd_from_settings(
+                ROOT, 18436, {'hires_upscalers_dir': str(upscalers)})
+            self.assertEqual(snapshot[-2:], ['--hires-upscalers-dir', str(upscalers)])
+            # A wrong path no longer refuses the launch: the flag is dropped and the caller
+            # logs why.  Starting beats blocking over a folder typo.
+            for bad in ('IMAGE-MODELS/no-such-folder', str(pathlib.Path(td) / 'absent'),
+                        str(ROOT / 'README.md')):
+                with self.subTest(bad=bad):
+                    cmd = image_ui.build_server_cmd(ROOT, 18436, hires_upscalers_dir=bad)
+                    self.assertNotIn('--hires-upscalers-dir', cmd)
+                    # the caller can report the exact folder it could not use
+                    warned = image_ui.hires_dir_warning(bad, ROOT)
+                    self.assertIn('放大器目錄不存在', warned)
+                    self.assertIn(pathlib.Path(bad).name, warned)
+            with self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, hires_upscalers_dir=str(upscalers),
+                                          extra_args='--hires-upscalers-dir D:/other')
+
+    def test_hand_written_hires_upscaler_directory_moves_into_its_field(self):
+        """A spelling typed into 「額外指令」 is lifted into the field instead of being rejected."""
+        migrate = image_ui.migrate_hires_upscalers_dir
+        self.assertEqual(migrate('--hires-upscalers-dir D:/models/upscalers'),
+                         ('', 'D:/models/upscalers'))
+        self.assertEqual(migrate('--hires-upscalers-dir=D:/models/x --auto-fit off'),
+                         ('--auto-fit off', 'D:/models/x'))
+        self.assertEqual(migrate('--auto-fit off'), ('--auto-fit off', ''))
+        self.assertEqual(migrate('--hires-upscalers-dir'), ('--hires-upscalers-dir', ''))
+        self.assertEqual(migrate(None), ('', ''))
+        self.assertEqual(migrate(''), ('', ''))
+
+    def test_hires_upscaler_directory_widget_locks_while_running(self):
+        """The folder is a launch-time flag: prefilled only when it exists, locked while running."""
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / image_ui.HIRES_UPSCALERS_DIR_DEFAULT).mkdir(parents=True)
+            settings = base / 'image-settings.json'
+            fake = mock.Mock(pid=222)
+            fake.poll.return_value = None
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    self.assertEqual(app.hires_upscalers_dir.get(), image_ui.HIRES_UPSCALERS_DIR_DEFAULT)
+                    app.start()
+                    cmd = popen.call_args.args[0]
+                    self.assertEqual(cmd[cmd.index('--hires-upscalers-dir') + 1],
+                                     str(base / image_ui.HIRES_UPSCALERS_DIR_DEFAULT))
+                    for widget in (app.hires_dir_entry, app.hires_dir_button, app.hires_dir_clear):
+                        self.assertEqual(str(widget['state']), 'disabled')
+                    self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['hires_upscalers_dir'],
+                                     image_ui.HIRES_UPSCALERS_DIR_DEFAULT)
+                    app.stop()
+                    for widget in (app.hires_dir_entry, app.hires_dir_button, app.hires_dir_clear):
+                        self.assertEqual(str(widget['state']), 'normal')
+                    # Clearing the field is the documented way to stop sending the flag.
+                    app.hires_upscalers_dir.set('')
+                    app.start()
+                    self.assertNotIn('--hires-upscalers-dir', popen.call_args.args[0])
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_absent_hires_upscaler_directory_still_starts_and_logs_the_reason(self):
+        """A wrong folder must not block the launch: sd-server ignores it and still serves.
+
+        It used to refuse to start over a typo, which made the whole window unusable for a
+        cosmetic mistake.  The flag is now dropped, the reason goes to the log, and the
+        server starts normally — the dropdown simply has no external models.
+        """
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'image-output').mkdir(parents=True, exist_ok=True)
+            settings = base / 'image-settings.json'
+            fake = mock.Mock(pid=333)
+            fake.poll.return_value = None
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    self.assertEqual(app.hires_upscalers_dir.get(), '')
+                    app.hires_upscalers_dir.set('IMAGE-MODELS/does-not-exist')
+                    app.start()
+                    popen.assert_called_once()          # the server really launched
+                    cmd = popen.call_args.args[0]
+                    self.assertNotIn('--hires-upscalers-dir', cmd)
+                    log = (base / 'image-output' / 'server.log').read_text(encoding='utf-8')
+                    self.assertIn('放大器目錄不存在', log)
+                    self.assertIn('does-not-exist', log)
+                    self.assertNotIn('啟動失敗', app.status.cget('text'))
+                    app.stop()
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_prefix_cache_can_be_disabled_for_qwen_image_21(self):
+        """Qwen-Image 2.1 plans a prefix-cache graph first and always drops it on 8 GB."""
+        self.assertEqual(image_ui.PREFIX_CACHE_KEY, 'qwen_image_2_1_prefix_cache')
+        self.assertNotIn('--model-args', image_ui.build_server_cmd(ROOT, 18436))
+        cmd = image_ui.build_server_cmd(ROOT, 18436, prefix_cache_disabled=True)
+        self.assertEqual(cmd[-2:], ['--model-args', 'qwen_image_2_1_prefix_cache=false'])
+        # The backend parses a strict boolean, so anything else is refused before launch.
+        for bad in ('true', 1, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, prefix_cache_disabled=bad)
+        with self.assertRaises(ValueError):
+            image_ui.build_server_cmd(ROOT, 18436, prefix_cache_disabled=True,
+                                      extra_args='--model-args other=1')
+        snapshot = image_ui.build_cmd_from_settings(
+            ROOT, 18436, {'prefix_cache_disabled': True, 'max_vram_reserve_gib': '3'})
+        self.assertEqual(snapshot[-4:], ['--max-vram', '-3', '--model-args',
+                                         'qwen_image_2_1_prefix_cache=false'])
+
+    def test_saved_snapshot_keeps_extra_args_across_a_mode_switch(self):
+        """A Qwen-Edit switch relaunches from the saved snapshot, so extra args must survive."""
+        settings = {'port': '18436', 'offload': True, 'runtime': 'custom/',
+                    'models': {'llm_vision': 'IMAGE-MODELS/mmproj.gguf'}, 'cache_mode': 'spectrum',
+                    'spectrum_w': '0.2', 'diffusion_fa': True, 'conditioning_cache_size': '8',
+                    'extra_args': '--auto-fit off', 'max_vram_reserve_gib': '2',
+                    'prefix_cache_disabled': True}
+        cmd = image_ui.build_cmd_from_settings(ROOT, 18436, settings, vision=True, offload=True)
+        for flag in ('--llm_vision', '--offload-to-cpu', '--cache-mode', '--diffusion-fa',
+                     '--conditioning-cache-size'):
+            self.assertIn(flag, cmd)
+        self.assertEqual(cmd[cmd.index('--max-vram') + 1], '-2')
+        self.assertIn('qwen_image_2_1_prefix_cache=false', cmd)
+        self.assertEqual(cmd[-2:], ['--auto-fit', 'off'])
+        plain = image_ui.build_cmd_from_settings(ROOT, 18436, settings, offload=False)
+        self.assertNotIn('--offload-to-cpu', plain)
+        self.assertEqual(plain[-6:], ['--max-vram', '-2', '--model-args',
+                                      'qwen_image_2_1_prefix_cache=false', '--auto-fit', 'off'])
+
+    def test_widgets_forward_extra_args_reserve_number_and_prefix_cache_then_persist(self):
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            settings = base / 'image-settings.json'
+            fake = mock.Mock(pid=222)
+            fake.poll.return_value = None
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    self.assertEqual(app.extra_args.get(), '')
+                    # Reserve number: editable, and 0 by default (flag not sent at all).
+                    self.assertEqual(app.max_vram_reserve.get(), '0')
+                    self.assertFalse(app.prefix_cache_disabled.get())
+                    self.assertFalse(app.vae_on_cpu.get())
+                    self.assertTrue(app.vae_tiling.get())   # 分塊解碼是預設：新安裝沒存檔也要開
+                    app.offload.set(False)
+                    app.extra_args.set('--auto-fit off')
+                    app.max_vram_reserve.set('3')
+                    app.prefix_cache_disabled.set(True)
+                    app.vae_on_cpu.set(True)
+                    app.vae_tiling.set(True)
+                    app.start()
+                    self.assertEqual(popen.call_args.args[0][-9:],
+                                     ['--backend', 'vae=cpu', '--vae-tiling', '--max-vram', '-3', '--model-args',
+                                      'qwen_image_2_1_prefix_cache=false', '--auto-fit', 'off'])
+                    saved = json.loads(settings.read_text(encoding='utf-8'))
+                    self.assertEqual(saved['extra_args'], '--auto-fit off')
+                    self.assertEqual(saved['max_vram_reserve_gib'], '3')
+                    self.assertTrue(saved['prefix_cache_disabled'])
+                    self.assertTrue(saved['vae_on_cpu'])
+                    self.assertTrue(saved['vae_tiling'])
+                    locked = (app.extra_args_entry, app.max_vram_box, app.prefix_cache_box,
+                              app.vae_cpu_box, app.vae_tiling_box)
+                    for widget in locked:
+                        self.assertEqual(str(widget.cget('state')), 'disabled')
+                    app.stop()
+                    for widget in locked:
+                        self.assertEqual(str(widget.cget('state')), 'normal')
+                    app.max_vram_reserve.set('lots')  # Not a number: refuse and keep the saved settings
+                    app.start()
+                    self.assertEqual(popen.call_count, 1)
+                    self.assertIn('保留顯存', app.status.cget('text'))
+                    app.max_vram_reserve.set('3')
+                    app.extra_args.set('--listen-port 18437')  # Managed flag: refuse before launch
+                    app.start()
+                    self.assertEqual(popen.call_count, 1)
+                    self.assertIn('--listen-port', app.status.cget('text'))
+                    self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['extra_args'],
+                                     '--auto-fit off')
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_lora_resident_flag_tracks_only_the_current_server_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = pathlib.Path(td) / 'server.log'
+            self.assertFalse(image_ui.lora_resident(log))  # missing log: nothing resident
+            log.write_text('[INFO   ] apply_loras completed, taking 0.04s\n', encoding='utf-8')
+            self.assertTrue(image_ui.lora_resident(log))
+            log.write_text('[INFO   ] apply_loras completed\n' + 'x' * 4096, encoding='utf-8')
+            self.assertFalse(image_ui.lora_resident(log, limit=128))  # stale head must not count
+            self.assertFalse(image_ui.lora_resident(log, since=32, limit=4096))  # before `since` never counts
+            self.assertTrue(image_ui.lora_resident(log, limit=8192))  # ...but within the tail window it does
+            log.write_text('x' * 4096 + '\n[INFO   ] apply_loras completed\n', encoding='utf-8')
+            self.assertTrue(image_ui.lora_resident(log, limit=128))  # fresh tail does count
+
+    def test_restart_request_relaunches_server_and_clears_resident_lora(self):
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            settings = base / 'image-settings.json'
+            exited = {'value': False}
+            fake_proc = mock.Mock(pid=111, returncode=0)
+            fake_proc.poll.side_effect = lambda: 0 if exited['value'] else None
+            replacement = mock.Mock(pid=222)
+            replacement.poll.return_value = None
+            callbacks = []
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen', side_effect=[fake_proc, replacement]) as popen:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    app.start()
+                    argv = list(popen.call_args.args[0])
+                    self.assertFalse(app.mode_status()['lora_resident'])
+                    self.assertTrue(callable(app.save_service.request_restart))
+                    log = base / 'image-output' / 'server.log'
+                    with log.open('a', encoding='utf-8') as handle:
+                        handle.write('[INFO   ] diffusion_engine.cpp:1808 - apply_loras completed, taking 0.04s\n')
+                    self.assertTrue(app.mode_status()['lora_resident'])
+                    saver = app.save_service
+                    with mock.patch.object(root, 'after', side_effect=lambda _ms, fn: callbacks.append(fn)):
+                        accepted, message = app.request_restart()
+                        self.assertTrue(accepted)
+                        self.assertIn('LoRA', message)
+                        exited['value'] = True
+                        callbacks.pop(0)()  # begin_switch: stop the old process
+                        self.assertTrue(app.switching)
+                        callbacks.pop(0)()  # finish_switch: relaunch with the same settings
+                    self.assertFalse(app.switching)
+                    self.assertEqual(popen.call_count, 2)
+                    self.assertEqual(popen.call_args.args[0], argv)
+                    self.assertIs(app.save_service, saver)
+                    self.assertEqual(app.restart_note, '')
+                    self.assertFalse(app.mode_status()['lora_resident'])  # restart released it
+                    self.assertIn('釋放常駐 LoRA', log.read_text(encoding='utf-8'))
+                    self.assertTrue(app.save_service.token)
+                    app.stop()
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_restart_request_is_refused_when_no_server_is_running(self):
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False):
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    accepted, message = app.request_restart()
+                    self.assertFalse(accepted)
+                    self.assertIn('未執行', message)
+                    self.assertFalse(app.mode_status()['lora_resident'])
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_mode_endpoint_keeps_answering_after_the_server_restarts(self):
+        """The page's release-LoRA button reads /mode with the port and token it was opened with."""
+        import tkinter as tk
+        import urllib.request
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen') as popen:
+                popen.return_value.poll.return_value = None  # the server is up in this session
+                popen.return_value.pid = 1234
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    app.start()
+                    port, token = app.save_service.httpd.server_port, app.save_service.token
+                    app.stop()
+                    app.start()  # control window 停止 → 啟動 must not invalidate the open page
+                    with (base / 'image-output' / 'server.log').open('a', encoding='utf-8') as handle:
+                        handle.write('[INFO   ] diffusion_engine.cpp:1808 - apply_loras completed, '
+                                     'taking 0.04s\n')
+                    request = urllib.request.Request(
+                        f'http://127.0.0.1:{port}/mode?token={token}',
+                        headers={'Origin': f'http://127.0.0.1:{app.port.get()}'})
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        payload = json.loads(response.read().decode('utf-8'))
+                    self.assertTrue(payload['lora_resident'])
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_web_page_explains_why_the_release_button_is_disabled(self):
+        """Disabled must be self-explanatory: no resident LoRA, a running queue, or lost access."""
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        for fragment in ('沒有套用過 LoRA', '按鈕要等本行程真的套用過 LoRA 才會亮',
+                         '有任務在生成', '讀不到控制窗的存圖服務', '重新開啟本頁'):
+            self.assertIn(fragment, html)
+
+    def test_web_page_release_flow_uses_restart_endpoint_without_launch_flags(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        for fragment in ('id="release-lora"', 'id="lora-memory"', "saveBase+'/restart'",
+                         'lora_resident', 'refreshLoraState'):
+            self.assertIn(fragment, html)
+        self.assertNotIn('--max-vram', html)  # VRAM reserve stays a control-window launch switch
+
+
+class ControlWindowTests(unittest.TestCase):
+    """The action bar and the previous run's log must survive a window that is too small."""
+
+    def test_action_buttons_stay_above_the_log_and_the_form_scrolls(self):
+        """The config form used to be clipped by the paned window, hiding 「▶ 啟動 Image Server」."""
+        import tkinter as tk
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=True):
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    root.geometry('880x620')  # too short for the whole form
+                    root.update()
+                    canvases = [wat for wat in descendants(root) if isinstance(wat, tk.Canvas)]
+                    self.assertTrue(canvases)
+                    form = canvases[0]
+                    box = form.bbox('all')
+                    self.assertGreater(box[3] - box[1], form.winfo_height())  # scrolls, no clipping
+                    for widget in (app.start_btn, app.stop_btn, app.status):
+                        self.assertTrue(widget.winfo_ismapped(), widget)
+                    ancestor = app.start_btn
+                    while ancestor is not root:
+                        self.assertNotIsInstance(ancestor, tk.Canvas)  # never scrolls out of sight
+                        ancestor = ancestor.master
+                    # Above the log pane, not below it.
+                    self.assertLess(app.start_btn.winfo_rooty(), app.log.winfo_rooty())
+                finally:
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_opening_the_window_keeps_the_previous_run_as_a_backup(self):
+        """A fresh window truncates server.log, so the last failure must be copied aside first."""
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'image-output').mkdir()
+            log = base / 'image-output' / 'server.log'
+            log.write_text('[ERROR] segment 1/1 (graph) failed during workspace capacity check\n',
+                           encoding='utf-8')
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', base / 'image-settings.json'), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False):
+                root = hidden_root()
+                try:
+                    image_ui.ImageApp(root)
+                    self.assertEqual(log.read_text(encoding='utf-8'), '')
+                    self.assertIn('workspace capacity check',
+                                  (base / 'image-output' / 'server.log.prev').read_text(encoding='utf-8'))
+                finally:
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+
+class ModelCandidateTests(unittest.TestCase):
+    """The dropdown lists every file, but each field marks the files that cannot fill it.
+
+    Picking a LoRA into VAE (or an upscaler) kills sd-server at startup with
+    'model metadata validation failed', so the UI must warn before the user does it.
+    """
+
+    def _models(self, td):
+        base = pathlib.Path(td)
+        for name in ('qwen_image_2.1_vae_bf16.safetensors',
+                     'qwen-image-2.1-Q4_K_M.gguf',
+                     'Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+                     'mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
+                     'loras/NSFW Qwen Lora.safetensors',
+                     'loras/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors',
+                     'upscalers/RealESRGAN_x4plus_anime_6B.pth'):
+            p = base / 'IMAGE-MODELS' / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b'x')
+        return base
+
+    def test_vae_field_accepts_only_vae_named_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = self._models(td)
+            ok = os.path.join('IMAGE-MODELS', 'qwen_image_2.1_vae_bf16.safetensors')
+            self.assertTrue(image_ui.model_fits_field(base, 'vae', ok))
+            for bad in (os.path.join('IMAGE-MODELS', 'loras', 'NSFW Qwen Lora.safetensors'),
+                        os.path.join('IMAGE-MODELS', 'upscalers', 'RealESRGAN_x4plus_anime_6B.pth'),
+                        os.path.join('IMAGE-MODELS', 'qwen-image-2.1-Q4_K_M.gguf'),
+                        os.path.join('IMAGE-MODELS', 'mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf')):
+                self.assertFalse(image_ui.model_fits_field(base, 'vae', bad), bad)
+
+    def test_loras_are_only_flagged_where_they_cannot_go(self):
+        lora = os.path.join('IMAGE-MODELS', 'loras', 'NSFW Qwen Lora.safetensors')
+        with tempfile.TemporaryDirectory() as td:
+            base = self._models(td)
+            self.assertFalse(image_ui.model_fits_field(base, 'clip_l', lora))
+            self.assertFalse(image_ui.model_fits_field(base, 'clip_g', lora))
+            self.assertFalse(image_ui.model_fits_field(base, 't5xxl', lora))
+            # a LoRA placed in the diffusion slot is a legitimate (if unusual) choice
+            self.assertTrue(image_ui.model_fits_field(base, 'diffusion', lora))
+
+    def test_candidate_labels_are_paths_plus_a_mark_for_mismatches(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = self._models(td)
+            labels = image_ui.model_fieldui_labels(base, 'vae')
+            good = str(base / 'IMAGE-MODELS' / 'qwen_image_2.1_vae_bf16.safetensors')
+            self.assertIn(good, labels)              # the only usable VAE, unmarked
+            self.assertNotIn(good + image_ui.NOT_FOR_FIELD_MARK, labels)
+            marked = [l for l in labels if l.endswith(image_ui.NOT_FOR_FIELD_MARK)]
+            self.assertTrue(marked, 'mis-candidates must be visibly marked')
+            for l in marked:                          # nothing marked may be the real VAE
+                self.assertNotIn('qwen_image_2.1_vae_bf16', l)
+            self.assertEqual(len(marked), len(labels) - 1)   # every other file is marked
+
+    def test_selected_value_is_never_dropped_from_the_list(self):
+        """tk rewrites an unmatched combobox value to '', which would silently unset a field."""
+        with tempfile.TemporaryDirectory() as td:
+            base = self._models(td)
+            outside = base / 'external' / 'my-custom-vae.safetensors'
+            outside.parent.mkdir(parents=True, exist_ok=True)
+            outside.write_bytes(b'x')
+            labels = image_ui.model_fieldui_labels(base, 'vae', extra=[str(outside)])
+            self.assertIn(str(outside), labels)
+
+
+    def test_hires_dir_flag_pasted_into_the_field_falls_back_to_the_conventional_folder(self):
+        """The field must hold a directory, never the flag name.
+
+        A pasted '--hires-upscalers-dir' used to be kept verbatim, so every launch refused to
+        start over a folder literally named '<base>/--hires-upscalers-dir' — and the window
+        saved it straight back, so it never healed.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'IMAGE-MODELS' / 'upscalers').mkdir(parents=True)
+            self.assertEqual(image_ui.sanitise_hires_dir('--hires-upscalers-dir', '', base),
+                             'IMAGE-MODELS/upscalers')
+            self.assertEqual(image_ui.sanitise_hires_dir('  --hires-upscalers-dir  ', '', base),
+                             'IMAGE-MODELS/upscalers')
+
+    def test_hires_dir_falls_back_to_empty_when_no_conventional_folder_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(image_ui.sanitise_hires_dir('--hires-upscalers-dir', '', pathlib.Path(td)), '')
+
+    def test_a_real_path_is_never_silently_swapped(self):
+        """A typo must still fail loudly at launch (documented), not be replaced by the default."""
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'IMAGE-MODELS' / 'upscalers').mkdir(parents=True)
+            self.assertEqual(image_ui.sanitise_hires_dir('D:/my/esrgan', '', base), 'D:/my/esrgan')
+            # a hand-written flag in 「額外指令」 still wins, as before
+            self.assertEqual(image_ui.sanitise_hires_dir('', 'IMAGE-MODELS/upscalers', base),
+                             'IMAGE-MODELS/upscalers')
+            self.assertEqual(image_ui.sanitise_hires_dir(None, '', base), 'IMAGE-MODELS/upscalers')
+
+    def test_flag_like_value_is_dropped_and_reported_by_name(self):
+        """A pasted flag name must not become a joined path, and must not block the launch."""
+        with tempfile.TemporaryDirectory() as td:
+            cmd = image_ui.build_server_cmd(pathlib.Path(td), 18436,
+                                            hires_upscalers_dir='--hires-upscalers-dir')
+            self.assertNotIn('--hires-upscalers-dir', cmd)
+            message = image_ui.hires_dir_warning('--hires-upscalers-dir', pathlib.Path(td))
+            self.assertIn('--hires-upscalers-dir', message)
+            self.assertIn('旗標', message)
+            self.assertNotIn(str(pathlib.Path(td) / '--hires-upscalers-dir'), message)
+
+
+    def test_dropdown_marker_never_reaches_a_setting_path(self):
+        """The  ✗ 不適用 suffix is display-only; it must not become part of a model path.
+
+        Selecting a marked dropdown entry wrote '...safetensors  ✗ 不適用' into the field, so
+        sd-server reported 模型格式不符 for a name that looked correct.
+        """
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            (base / 'IMAGE-MODELS' / 'loras').mkdir(parents=True)
+            bad = base / 'IMAGE-MODELS' / 'loras' / 'NSFW Qwen Lora.safetensors'
+            bad.write_bytes(b'x')
+            settings = base / 'image-settings.json'
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui, 'model_fits_field', return_value=False), \
+                 mock.patch.object(image_ui.messagebox, 'showwarning') as warn:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    app.models['vae'].set('NSFW Qwen Lora.safetensors' + image_ui.NOT_FOR_FIELD_MARK)
+                    app.check_model_choice('vae')
+                    self.assertEqual(app.models['vae'].get(), 'NSFW Qwen Lora.safetensors')
+                    warn.assert_called_once()
+                finally:
+                    app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+        # a settings snapshot saved by the buggy build is cleaned on its way into the command
+        cmd = image_ui.build_server_cmd(ROOT, 18436,
+                                        models={'diffusion': 'IMAGE-MODELS/x.gguf' + image_ui.NOT_FOR_FIELD_MARK})
+        self.assertTrue(any(part.endswith('IMAGE-MODELS' + os.sep + 'x.gguf') for part in cmd), cmd)
+        self.assertFalse(any(image_ui.NOT_FOR_FIELD_MARK in part for part in cmd))
+
+    def test_hi_res_does_not_refuse_large_outputs_up_front(self):
+        """The 32-multiple rule is the only client-side Hi-res shape check left.
+
+        A pixel ceiling used to block the default 512x1024 @2x (=2,097,152 px) before the
+        request was ever sent, so the feature looked broken.  If the card cannot take it,
+        sd-server fails the job and the task shows the error — that is enough.
+        """
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        self.assertNotIn('2_000_000', html)
+        self.assertNotIn('200 萬', html)
+
+    def test_viggle_six_step_is_no_longer_blocked_from_img2img_or_hires(self):
+        """The block was a stub, not a limit: the server runs the combination fine.
+
+        Live runs confirmed the native path applies the 6-step sigmas to stage 1 and the Hi-res
+        block to stage 2.  The page must not refuse it up front — stage 2 just derives its own
+        schedule from 第二輪步數+去噪強度, which the help text now says out loud.
+        """
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        self.assertNotIn('Viggle 不支援', html)
+        self.assertNotIn('不支援去噪 Img2Img 或 Hi-res', html)
+        self.assertNotIn('不支援 Hi-res 或一般去噪 Img2Img', html)
+        # the native branch still forwards both blocks for the turbo path
+        self.assertIn('if(viggleTurbo||(mode===\'img2img\'&&body.hrNative))', html)
+        self.assertIn('sample_params.custom_sigmas=viggleSigmas', html)
+        self.assertIn('native.hires={enabled:true', html)
+        # and the help text has to warn that stage 2 does not reuse the 6-step sigmas
+        self.assertIn('不會沿用 6 步 turbo sigma', html)
+
+    def test_hi_res_scale_offers_a_same_size_enhance_option(self):
+        """1x runs the model upscaler and resamples back, sharpening without enlarging.
+
+        Live: 128x128 with RealESRGAN and target 128x128 loaded the .pth, upscaled internally
+        and returned 128x128.  The dropdown must expose it.
+        """
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        m = re.search(r'<select id="hr-scale"[^>]*>(.*?)</select>', html, re.S)
+        self.assertIsNotNone(m, '找不到 Hi-res 倍率選單')
+        self.assertIn('value="1"', m.group(1))
+        self.assertIn('同尺寸升畫質', m.group(1))
+
+    def test_denoising_strength_allows_zero_for_pure_hires(self):
+        """strength 0 skips stage 1 entirely ('target t_enc is 0 steps') and only upscales.
+
+        Verified live: with strength=0 the log shows 'target t_enc is 0 steps' and then
+        'hires fix: upscaling to ...'.  A min of 0.01 made that unreachable from the page.
+        """
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        m = re.search(r'<input id="denoising-strength"[^>]*>', html)
+        self.assertIsNotNone(m, '找不到改動強度欄位')
+        self.assertIn('min="0"', m.group(0))
+        self.assertNotIn('min="0.01"', m.group(0))
 
 
 if __name__ == '__main__':

@@ -212,14 +212,78 @@ class SaveServiceTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_restart_endpoint_requires_authorised_json_and_reports_result(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            service = ImageSaveService(pathlib.Path(td), 'http://127.0.0.1:18436',
+                request_restart=lambda: (calls.append('restart') or True, '正在重新啟動')).start()
+            try:
+                url = service.url + '/restart'
+                good = {'Origin': service.origin, 'X-GGUFRun-Token': service.token, 'Content-Type': 'application/json'}
+                with urllib.request.urlopen(urllib.request.Request(url, data=b'{"reason":"lora"}', headers=good), timeout=4) as response:
+                    self.assertEqual(response.status, 202)
+                    self.assertEqual(json.load(response)['status'], '正在重新啟動')
+                self.assertEqual(calls, ['restart'])
+                for headers in ({'Origin': service.origin, 'Content-Type': 'application/json'},
+                                {'Origin': 'http://evil', 'X-GGUFRun-Token': service.token, 'Content-Type': 'application/json'},
+                                {'Origin': service.origin, 'X-GGUFRun-Token': service.token, 'Content-Type': 'text/plain'}):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, data=b'{"reason":"lora"}', headers=headers), timeout=4)
+                    self.assertEqual(caught.exception.code, 403)
+                    caught.exception.close()
+                for payload in (b'{"reason":7}', b'[]', b'{"reason":"' + b'x' * 40 + b'"}'):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(urllib.request.Request(url, data=payload, headers=good), timeout=4)
+                    self.assertEqual(caught.exception.code, 400)
+                    caught.exception.close()
+                self.assertEqual(calls, ['restart'])
+                preflight = urllib.request.Request(url, method='OPTIONS',
+                            headers={'Origin': service.origin, 'Access-Control-Request-Method': 'POST'})
+                with urllib.request.urlopen(preflight, timeout=4) as response:
+                    self.assertEqual(response.status, 204)
+            finally:
+                service.close()
+
+    def test_restart_endpoint_surfaces_refusal_and_unsupported_controller(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = ImageSaveService(pathlib.Path(td), 'http://127.0.0.1:18436',
+                request_restart=lambda: (False, 'Image Server 未執行')).start()
+            try:
+                headers = {'Origin': service.origin, 'X-GGUFRun-Token': service.token, 'Content-Type': 'application/json'}
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(urllib.request.Request(service.url + '/restart', data=b'{"reason":"lora"}', headers=headers), timeout=4)
+                body = json.loads(caught.exception.read().decode('utf-8'))
+                self.assertEqual(caught.exception.code, 409)
+                caught.exception.close()
+                self.assertIn('未執行', body['status'])
+            finally:
+                service.close()
+        with tempfile.TemporaryDirectory() as td:
+            plain = ImageSaveService(pathlib.Path(td), 'http://127.0.0.1:18436').start()
+            try:
+                headers = {'Origin': plain.origin, 'X-GGUFRun-Token': plain.token, 'Content-Type': 'application/json'}
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(urllib.request.Request(plain.url + '/restart', data=b'{"reason":"lora"}', headers=headers), timeout=4)
+                self.assertEqual(caught.exception.code, 409)
+                caught.exception.close()
+            finally:
+                plain.close()
+
     def test_cors_preflight_only_allows_configured_origin(self):
         with tempfile.TemporaryDirectory() as td:
             service = ImageSaveService(pathlib.Path(td), 'http://127.0.0.1:18436')
             service.start()
             try:
+                for path in ('/save', '/mode', '/restart'):
+                    req = urllib.request.Request(service.url + path, method='OPTIONS',
+                                headers={'Origin': service.origin, 'Access-Control-Request-Method': 'POST'})
+                    with urllib.request.urlopen(req, timeout=4) as response:
+                        self.assertEqual(response.headers['Access-Control-Allow-Origin'], service.origin)
                 req = urllib.request.Request(service.url + '/save', method='OPTIONS',
-                            headers={'Origin': service.origin, 'Access-Control-Request-Method': 'POST'})
-                with urllib.request.urlopen(req, timeout=4) as response:
-                    self.assertEqual(response.headers['Access-Control-Allow-Origin'], service.origin)
+                            headers={'Origin': 'http://evil', 'Access-Control-Request-Method': 'POST'})
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(req, timeout=4)
+                self.assertEqual(caught.exception.code, 403)
+                caught.exception.close()
             finally:
                 service.close()

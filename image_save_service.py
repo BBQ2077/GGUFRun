@@ -78,10 +78,12 @@ def parse_progress(text, steps=0):
 
 
 class ImageSaveService:
-    def __init__(self, output_dir, origin, mode_status=None, request_mode=None, log_path=None):
+    def __init__(self, output_dir, origin, mode_status=None, request_mode=None, log_path=None,
+                 request_restart=None):
         self.output_dir = pathlib.Path(output_dir)
         self.mode_status = mode_status
         self.request_mode = request_mode
+        self.request_restart = request_restart
         self.log_path = pathlib.Path(log_path) if log_path else self.output_dir / 'server.log'
 
         self.origin = origin
@@ -115,7 +117,7 @@ class ImageSaveService:
                 self.wfile.write(body)
 
             def do_OPTIONS(self):
-                if not self.allowed() or self.path not in ('/save', '/mode') or self.headers.get('Access-Control-Request-Method') != 'POST':
+                if not self.allowed() or self.path not in ('/save', '/mode', '/restart') or self.headers.get('Access-Control-Request-Method') != 'POST':
                     self.reply(403, {'error': '來源不符'})
                     return
                 self.send_response(204)
@@ -126,13 +128,29 @@ class ImageSaveService:
                 self.end_headers()
 
             def do_POST(self):
-                if (self.path not in ('/save', '/mode') or not self.allowed() or
+                if (self.path not in ('/save', '/mode', '/restart') or not self.allowed() or
                         self.headers.get('X-GGUFRun-Token') != service.token or
                         self.headers.get('Content-Type', '').split(';')[0].lower() != 'application/json'):
                     self.reply(403, {'error': '拒絕未授權儲存'})
                     return
                 try:
                     size = int(self.headers.get('Content-Length', '0'))
+                    if self.path == '/restart':
+                        # Resident LoRA weights (applied at runtime) can only be returned by a
+                        # new sd-server process, so the page asks the control window to relaunch.
+                        if not service.request_restart:
+                            self.reply(409, {'error': '此控制窗不支援重新啟動'})
+                            return
+                        if not 0 < size <= 128:
+                            raise ValueError('重啟要求格式錯誤')
+                        request = json.loads(self.rfile.read(size))
+                        if (not isinstance(request, dict) or
+                                not isinstance(request.get('reason', ''), str) or
+                                len(request.get('reason', '')) > 32):
+                            raise ValueError('重啟要求格式錯誤')
+                        accepted, message = service.request_restart()
+                        self.reply(202 if accepted else 409, {'status': message})
+                        return
                     if self.path == '/mode':
                         if not service.request_mode:
                             self.reply(409, {'error': '此控制窗不支援模式切換'})
