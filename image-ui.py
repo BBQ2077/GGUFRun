@@ -1152,7 +1152,7 @@ class ImageApp:
             try:
                 # 先讓 Tk 把摺疊／展開造成的尺寸變化結算完，再讀高度。
                 # 少了這行 update_idletasks()，pack_forget() 之後讀到的還是
-                # 舊高度，分隔線就收不回來（使用者：「空位會一直存在」）。
+                # 舊高度，分隔線就收不回來（畫面上會留下多餘的空白）。
                 root.update_idletasks()
                 canvas.configure(height=frame.winfo_reqheight())
                 root.update_idletasks()
@@ -1244,7 +1244,7 @@ class ImageApp:
         self.port_entry.pack(side='left', padx=(0, 18))
         ttk.Checkbutton(options, text='Offload 到系統 RAM（8 GB 顯卡建議）', variable=self.offload).pack(side='left')
         # VAE 在 CPU 上執行：原本就攤在主表單（省顯存的主力開關之一），
-        # 之前被我收進預設收合的「進階」區，使用者就找不到它了 —— 搬回來。
+        # 先前被收進預設收合的「進階」區而難以找到 —— 搬回主表單。
         self.vae_cpu_box = ttk.Checkbutton(options, text='VAE 在 CPU 上執行（--backend vae=cpu）',
                                            variable=self.vae_on_cpu)
         self.vae_cpu_box.pack(side='left', padx=(14, 0))
@@ -1351,7 +1351,7 @@ class ImageApp:
             """折疊／展開後：重算捲動範圍，並把分隔線重新貼到表單底部。
 
             只做 _resync_scroll 的話，表單變矮了但分隔線還留在原地，
-            設定區就會留一大塊空白（使用者：「空位會一直存在」）。
+            設定區就會留一大塊空白（畫面會顯示多餘的空白區）。
             """
             _resync_scroll()
             fit_sash()

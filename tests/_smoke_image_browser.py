@@ -220,7 +220,7 @@ async def main():
                         break
                     await asyncio.sleep(.1)
                 else:
-                    raise RuntimeError('放大器清單未就緒時沒有提示使用者：' + repr(note))
+                    raise RuntimeError('放大器清單未就緒時未顯示提示訊息：' + repr(note))
                 assert await evaluate("document.querySelector('#hr-upscaler').options.length") == 2
                 Fake.upscalers = json.dumps([
                     {'model_name': None, 'model_path': None, 'model_url': None, 'name': 'None', 'scale': 4},
