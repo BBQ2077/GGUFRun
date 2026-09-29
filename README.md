@@ -53,6 +53,14 @@ GGUFRun/
 
 使用者設定儲存在 `models.json`、`ui-settings.json`、`presets.json`、`image-settings.json`；生成圖片與 Image Server 日誌儲存在 `image-output/`。
 
+## Viggle Qwen-Image-2.1 Turbo（生圖頁選配）
+
+生圖頁有「Viggle Qwen-Image-2.1 Turbo LoRA（選填）」選單，預設關閉。開啟後單張任務固定 Euler、CFG 1，並依輸出尺寸換算時間位移；「取樣步數」預設 6、可自訂 **4～150**：作者列出 4 步訓練節點、5／6／7 步高噪聲切分，以及密集文字建議的 **8 步**節點（[官方比較頁](https://huggingface.co/spaces/Viggle/Qwen-Image-2.1-viggle-turbo)的 5 個密集文字範例即用 8 步），9 步以上依作者「保留低噪聲節點、只細分高噪聲區段」原則推算，非逐一驗證的最佳值。可與 Hi-res 或去噪 Img2Img 併用；Hi-res 第二輪預設用獨立排程，勾選「第二輪沿用第一輪 turbo sigma」後改以放大後尺寸與第二輪步數重算同一套排程。關閉時步數恢復原值。
+
+權重有兩種用法：掛 **LoRA**（`IMAGE-MODELS/loras/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors`；官方原始 r128 權重未隨附，重建衍生檔見 `tools/viggle-turbo/fuse_viggle.py`），或直接把作者轉好的 **融合 GGUF** 當生圖模型（此時開啟頁面會偵測模型名含 `viggle` 並自動啟用、免再掛 LoRA，避免重複套用）。兩種權重皆須自備；**本公開版不附任何 Viggle 權重**。[Viggle 模型卡](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)標示非商業研究與評估限制。
+
+LoRA 一經伺服器套用即常駐，切回「關閉」不會歸還記憶體；網頁在選項旁有「♻ 釋放 LoRA 記憶體（重啟 Image Server）」按鈕，以相同啟動參數重啟後釋放。8 GB 顯卡請保留 CPU offload。
+
 ## 可選功能與授權
 
 Image 網頁支援文字生圖、Img2Img、Qwen Edit 多參考圖與選配 Hi-res；支援哪些功能取決於模型與 sd-server 建置。Viggle Turbo LoRA 是選配，**本公開版不附權重也不附轉換後權重**；未取得合法且相容的權重時請維持關閉。[Viggle 模型卡](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)標示非商業研究與評估限制。請分別遵守模型、runtime、LoRA 的原始授權；本專案 [MIT 授權](LICENSE) 僅涵蓋本專案程式碼。

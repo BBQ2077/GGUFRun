@@ -863,9 +863,10 @@ class ExtraArgsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             image_ui.build_server_cmd(ROOT, 18436, vae_tiling=True, extra_args='--vae-tiling')
         # The mode switch reuses the saved snapshot, so both flags must survive it.
-        self.assertEqual(image_ui.build_cmd_from_settings(
-            ROOT, 18436, {'vae_on_cpu': True, 'vae_tiling': True})[-3:],
-            ['--backend', 'vae=cpu', '--vae-tiling'])
+        switched = image_ui.build_cmd_from_settings(
+            ROOT, 18436, {'vae_on_cpu': True, 'vae_tiling': True})
+        self.assertEqual(switched[switched.index('--backend'):switched.index('--backend') + 3],
+                         ['--backend', 'vae=cpu', '--vae-tiling'])
 
     def test_vae_tiling_defaults_on_unless_the_saved_settings_turn_it_off(self):
         """分塊解碼預設開啟：沒有存檔、或舊存檔缺這個欄位時都要送 --vae-tiling。"""
@@ -1109,8 +1110,9 @@ class ExtraArgsTests(unittest.TestCase):
                     app.vae_on_cpu.set(True)
                     app.vae_tiling.set(True)
                     app.start()
-                    self.assertEqual(popen.call_args.args[0][-9:],
-                                     ['--backend', 'vae=cpu', '--vae-tiling', '--max-vram', '-3', '--model-args',
+                    self.assertEqual(popen.call_args.args[0][-11:],
+                                     ['--backend', 'vae=cpu', '--vae-tiling', '--ref-image-args',
+                                      image_ui.REF_IMAGE_ARGS_DEFAULT, '--max-vram', '-3', '--model-args',
                                       'qwen_image_2_1_prefix_cache=false', '--auto-fit', 'off'])
                     saved = json.loads(settings.read_text(encoding='utf-8'))
                     self.assertEqual(saved['extra_args'], '--auto-fit off')
@@ -1280,6 +1282,175 @@ class ExtraArgsTests(unittest.TestCase):
                          'lora_resident', 'refreshLoraState'):
             self.assertIn(fragment, html)
         self.assertNotIn('--max-vram', html)  # VRAM reserve stays a control-window launch switch
+
+
+class ViggleHiresAndFilenameTests(unittest.TestCase):
+    """Hi-res 第二輪可沿用 turbo sigma；Viggle 產圖檔名帶 -6step／-turbo。"""
+
+    def test_hires_can_carry_the_first_round_turbo_sigma(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        for fragment in ('id="hr-turbo-sigma"', '第二輪沿用第一輪 turbo sigma',
+                         "body.hrTurboSigma=$('hr-turbo-sigma').checked&&$('viggle').value==='6step'",
+                         'if(viggleTurbo&&body.hrTurboSigma)',
+                         'native.hires.custom_sigmas=viggleSigmas(body.hr_resize_x,body.hr_resize_y,body.hr_steps)'):
+            self.assertIn(fragment, html)
+        # 第二輪 sigma 只在有開 Viggle 且使用者勾選時才送；沒勾就維持自行推導排程。
+        self.assertIn('if(viggleTurbo&&body.hrTurboSigma)', html)
+        # 沿用 sigma 只在 Viggle 開啟時可用。
+        self.assertIn("$('hr-turbo-sigma').disabled=!$('enable-hr').checked||!viggleOn", html)
+
+    def test_viggle_runs_are_tagged_in_the_saved_filename(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        self.assertIn('viggle:Boolean(body.viggleTurbo)', html)
+        # 別再把存圖 payload 寫成區塊外的裸變數：那正是先前存圖全數失敗的 ReferenceError 來源。
+        self.assertNotIn('viggle:Boolean(viggleTurbo)', html)
+        service = (ROOT / 'image_save_service.py').read_text(encoding='utf-8')
+        self.assertIn("if data.get('viggle') is True:", service)
+        self.assertIn("mode_label += '-6step' if steps == 6 else '-turbo'", service)
+
+
+class FlashAttentionAndRefImageTests(unittest.TestCase):
+    """--fa（全流程）與 --ref-image-args（參考圖參數）是兩個新的原生旗標。"""
+
+    def test_fa_flag_defaults_on_and_sits_beside_diffusion_fa(self):
+        """--fa 預設開啟、與 --diffusion-fa 並存；兩者互不取代。"""
+        self.assertEqual(image_ui.FA_FLAG, '--fa')
+        # 預設（沒指定）＝ 送出 --fa；--diffusion-fa 仍需自行勾選。
+        plain = image_ui.build_server_cmd(ROOT, 18436)
+        self.assertIn('--fa', plain)
+        self.assertNotIn('--diffusion-fa', plain)
+        # 兩者同時送。
+        both = image_ui.build_server_cmd(ROOT, 18436, fa=True, diffusion_fa=True)
+        self.assertIn('--fa', both)
+        self.assertIn('--diffusion-fa', both)
+        # 明確關掉 --fa，但 --diffusion-fa 仍在。
+        self.assertNotIn('--fa', image_ui.build_server_cmd(ROOT, 18436, fa=False))
+        self.assertNotIn('--fa', image_ui.build_server_cmd(ROOT, 18436, fa=False, diffusion_fa=True))
+        for bad in ('yes', 1, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                image_ui.build_server_cmd(ROOT, 18436, fa=bad)
+
+    def test_fa_survives_the_settings_snapshot_and_migrates_from_extra_args(self):
+        # 舊存檔沒有 fa 欄位 → 預設開啟。
+        self.assertIn('--fa', image_ui.build_cmd_from_settings(ROOT, 18436, {}))
+        # 存檔明確關掉 → 不送。
+        self.assertNotIn('--fa', image_ui.build_cmd_from_settings(ROOT, 18436, {'fa': False}))
+        self.assertIn('--fa', image_ui.build_cmd_from_settings(ROOT, 18436, {'fa': True}))
+        # 手寫在額外指令的 --fa 會被搬進欄位，剩下的照舊。
+        self.assertEqual(image_ui.migrate_fa_flag('--fa --auto-fit off'), ('--auto-fit off', True))
+        self.assertEqual(image_ui.migrate_fa_flag('--auto-fit off'), ('--auto-fit off', False))
+        self.assertEqual(image_ui.migrate_fa_flag(None), ('', False))
+
+    def test_ref_image_args_defaults_and_reaches_the_launch_command(self):
+        self.assertEqual(image_ui.REF_IMAGE_ARGS_FLAG, '--ref-image-args')
+        self.assertEqual(image_ui.REF_IMAGE_ARGS_DEFAULT, 'preset=qwen,vae_input_max_pixels=800000')
+        # 沒填 → 不送；填了 → 原樣送成一組旗標＋值。
+        self.assertNotIn('--ref-image-args', image_ui.build_server_cmd(ROOT, 18436))
+        cmd = image_ui.build_server_cmd(ROOT, 18436, ref_image_args=image_ui.REF_IMAGE_ARGS_DEFAULT)
+        self.assertEqual(cmd[cmd.index('--ref-image-args') + 1], image_ui.REF_IMAGE_ARGS_DEFAULT)
+        # 舊存檔沒有這個欄位時沿用實測預設，切換模式重啟不會把它弄丟。
+        self.assertEqual(
+            image_ui.build_cmd_from_settings(ROOT, 18436, {}).count('--ref-image-args'), 1)
+        self.assertNotIn('--ref-image-args',
+                         image_ui.build_cmd_from_settings(ROOT, 18436, {'ref_image_args': ''}))
+        # 格式驗證：合法 key=value 清單、空字串都收；旗標名或沒有 = 的拒絕。
+        self.assertTrue(image_ui.valid_ref_image_args(image_ui.REF_IMAGE_ARGS_DEFAULT))
+        self.assertTrue(image_ui.valid_ref_image_args(''))
+        self.assertTrue(image_ui.valid_ref_image_args('a=1, b=2'))
+        self.assertFalse(image_ui.valid_ref_image_args(None))
+        for bad in ('--fa', 'preset', 'a=1,,b=2', 1):
+            with self.subTest(bad=bad):
+                self.assertFalse(image_ui.valid_ref_image_args(bad))
+                with self.assertRaises(ValueError):
+                    image_ui.build_server_cmd(ROOT, 18436, ref_image_args=bad)
+        # 兩處都填會被擋下，避免同一旗標送兩次。
+        with self.assertRaises(ValueError):
+            image_ui.build_server_cmd(ROOT, 18436, ref_image_args='a=1',
+                                      extra_args='--ref-image-args b=2')
+
+    def test_hand_written_ref_image_args_moves_into_the_field(self):
+        migrate = image_ui.migrate_ref_image_args
+        self.assertEqual(migrate('--ref-image-args "preset=qwen,vae_input_max_pixels=800000"'),
+                         ('', 'preset=qwen,vae_input_max_pixels=800000'))
+        self.assertEqual(migrate('--ref-image-args=preset=qwen --auto-fit off'),
+                         ('--auto-fit off', 'preset=qwen'))
+        self.assertEqual(migrate('--fa --ref-image-args "preset=qwen"'),
+                         ('--fa', 'preset=qwen'))
+        self.assertEqual(migrate('--ref-image-args --fa'), ('--fa', ''))  # bare flag keeps next switch
+        self.assertEqual(migrate('--auto-fit off'), ('--auto-fit off', ''))
+        self.assertEqual(migrate(None), ('', ''))
+
+    def test_new_widgets_exist_lock_while_running_and_restore_the_default(self):
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as td:
+            base = pathlib.Path(td)
+            settings = base / 'image-settings.json'
+            fake = mock.Mock(pid=222)
+            fake.poll.return_value = None
+            with mock.patch.object(image_ui, 'BASE', base), \
+                 mock.patch.object(image_ui, 'SETTINGS', settings), \
+                 mock.patch.object(image_ui, 'port_busy', return_value=False), \
+                 mock.patch.object(image_ui.subprocess, 'Popen', return_value=fake) as popen:
+                root = hidden_root()
+                try:
+                    app = image_ui.ImageApp(root)
+                    self.assertTrue(app.fa.get())  # 預設開啟
+                    self.assertEqual(app.ref_image_args.get(), image_ui.REF_IMAGE_ARGS_DEFAULT)
+                    self.assertIn('預設值', app.ref_image_hint.cget('text'))
+                    app.start()
+                    cmd = popen.call_args.args[0]
+                    self.assertIn('--fa', cmd)
+                    self.assertEqual(cmd[cmd.index('--ref-image-args') + 1], image_ui.REF_IMAGE_ARGS_DEFAULT)
+                    for widget in (app.fa_all_box, app.ref_image_entry, app.ref_image_reset):
+                        self.assertEqual(str(widget.cget('state')), 'disabled')
+                    saved = json.loads(settings.read_text(encoding='utf-8'))
+                    self.assertIs(saved['fa'], True)
+                    self.assertEqual(saved['ref_image_args'], image_ui.REF_IMAGE_ARGS_DEFAULT)
+                    app.stop()
+                    for widget in (app.fa_all_box, app.ref_image_entry, app.ref_image_reset):
+                        self.assertEqual(str(widget.cget('state')), 'normal')
+                    # 「還原預設」把欄位拉回預設值。
+                    app.ref_image_args.set('garbage')
+                    app.ref_image_reset.invoke()
+                    self.assertEqual(app.ref_image_args.get(), image_ui.REF_IMAGE_ARGS_DEFAULT)
+                    self.assertIn('預設值', app.ref_image_hint.cget('text'))
+                    # 壞掉的內容：提示轉紅，且啟動被擋下。
+                    app.ref_image_args.set('not-key-value')
+                    self.assertIn('key=value', app.ref_image_hint.cget('text'))
+                    app.start()
+                    self.assertEqual(popen.call_count, 1)
+                    self.assertIn('--ref-image-args', app.status.cget('text'))
+                finally:
+                    if 'app' in locals():
+                        app.close()
+                    try:
+                        root.destroy()
+                    except tk.TclError:
+                        pass
+
+    def test_hint_popup_text_is_selectable(self):
+        """說明彈窗必須能反白選取複製；ttk.Label 做不到，所以用唯讀 Text。"""
+        import tkinter as tk
+        root = hidden_root()
+        opener = tk.Frame(root)
+        opener.pack()
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        image_ui._popup_hint(opener, '測試說明\n第二行')
+        popups = [w for w in descendants(opener) if isinstance(w, tk.Toplevel)]
+        self.assertEqual(len(popups), 1)
+        texts = [w for w in descendants(popups[0]) if isinstance(w, tk.Text)]
+        self.assertEqual(len(texts), 1)
+        box = texts[0]
+        self.assertEqual(box.cget('state'), 'disabled')
+        self.assertIn('測試說明', box.get('1.0', 'end'))
+        for button in [w for w in descendants(popups[0]) if isinstance(w, tk.ttk.Button)]:
+            self.assertIn(button.cget('text'), ('複製全部', '關閉'))
+        popups[0].destroy()
 
 
 class ControlWindowTests(unittest.TestCase):
@@ -1519,8 +1690,9 @@ class ModelCandidateTests(unittest.TestCase):
         self.assertIn('if(viggleTurbo||(mode===\'img2img\'&&body.hrNative))', html)
         self.assertIn('sample_params.custom_sigmas=viggleSigmas', html)
         self.assertIn('native.hires={enabled:true', html)
-        # and the help text has to warn that stage 2 does not reuse the 6-step sigmas
-        self.assertIn('不會沿用 6 步 turbo sigma', html)
+        # and the help text now says stage 2 can reuse the first-stage sigmas when opted in
+        self.assertIn('第二輪沿用第一輪 turbo sigma', html)
+        self.assertNotIn('不會沿用第一輪 turbo sigma', html)
 
     def test_hi_res_scale_offers_a_same_size_enhance_option(self):
         """1x runs the model upscaler and resamples back, sharpening without enlarging.

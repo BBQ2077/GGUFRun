@@ -203,6 +203,10 @@ class ImageSaveService:
                                               not math.isfinite(strength) or not 0 <= strength <= 1):
                         raise ValueError('圖生圖改動強度不正確')
                     mode_label = f'-img2img-dn{strength:g}' if mode == 'img2img' else ('-qwenedit' if mode == 'qwen_edit' else '')
+                    # Viggle turbo runs get a mode tag so a fused-LoRA result is not mistaken for a
+                    # plain Euler render: '-6step' for the author's 6-step schedule, '-turbo' otherwise.
+                    if data.get('viggle') is True:
+                        mode_label += '-6step' if steps == 6 else '-turbo'
                     cfg_text = f'{cfg:g}'
                     seed_text = str(seed) if seed >= 0 else 'random-unknown'
                     seconds = round(elapsed / 1000)
@@ -255,7 +259,7 @@ class ImageSaveService:
                     return
                 name = parsed.path.removeprefix('/image/')
                 valid_old = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-(?:[0-9]+|x)-[0-9a-f]{12}\.png', name)
-                valid_new = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-[0-9]+x[0-9]+-[0-9]+steps-cfg[0-9.]+-seed(?:[0-9]+|random-unknown)-[a-z0-9]+(?:-img2img-dn(?:[01](?:\.[0-9]+)?)|-qwenedit)?-[0-9]+s-[0-9a-f]{12}\.png', name)
+                valid_new = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-[0-9]+x[0-9]+-[0-9]+steps-cfg[0-9.]+-seed(?:[0-9]+|random-unknown)-[a-z0-9]+(?:-img2img-dn(?:[01](?:\.[0-9]+)?)|-qwenedit)?(?:-(?:6step|turbo))?-[0-9]+s-[0-9a-f]{12}\.png', name)
                 if (not parsed.path.startswith('/image/') or not (valid_old or valid_new)
                     or parse_qs(parsed.query).get('token') != [service.token]
                     or not self.allowed()):

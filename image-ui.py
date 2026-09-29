@@ -4,6 +4,7 @@ import functools
 import json
 import os
 import pathlib
+import re
 import shutil
 import socket
 import struct
@@ -85,15 +86,31 @@ def hint(parent, text, width=2):
 
 
 def _popup_hint(widget, text):
-    """「?」鈕的點擊版說明（滑鼠移開不易關，點一下開一個小窗）。"""
+    """「?」鈕的點擊版說明：可反白選取並複製，改錯設定時還能貼回欄位。"""
     try:
         win = tk.Toplevel(widget)
-        win.title('說明')
+        win.title('說明（文字可選取複製）')
         frame = ttk.Frame(win, padding=10)
         frame.pack(fill='both', expand=True)
-        lbl = ttk.Label(frame, text=text, wraplength=560, justify='left')
-        lbl.pack(anchor='w')
-        ttk.Button(frame, text='關閉', command=win.destroy).pack(anchor='e', pady=(8, 0))
+        # ttk.Label 的文字無法反白選取；改用唯讀 Text，這樣說明、路徑與預設值都能用滑鼠
+        # 選取後 Ctrl+C 複製，使用者不必憑記憶重打。
+        box = tk.Text(frame, wrap='word', width=64, height=min(20, max(3, text.count(chr(10)) + 1)),
+                      relief='flat', highlightthickness=0, background=frame.winfo_toplevel().cget('bg'))
+        box.insert('1.0', text)
+        box.configure(state='disabled')
+        box.pack(fill='both', expand=True, anchor='w')
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill='x', pady=(8, 0))
+
+        def copy_all():
+            try:
+                widget.clipboard_clear()
+                widget.clipboard_append(text)
+            except tk.TclError:
+                pass
+
+        ttk.Button(buttons, text='複製全部', command=copy_all).pack(side='right')
+        ttk.Button(buttons, text='關閉', command=win.destroy).pack(side='right', padx=(0, 6))
         win.transient(widget.winfo_toplevel())
     except tk.TclError:
         pass
@@ -357,6 +374,20 @@ VAE_TILING_FLAG = '--vae-tiling'
 # instead of being refused.
 HIRES_UPSCALERS_DIR_FLAG = '--hires-upscalers-dir'
 HIRES_UPSCALERS_DIR_DEFAULT = 'IMAGE-MODELS/upscalers'
+# Flash attention ships two independent switches in sd-server:
+#   --fa            use flash attention (the whole pipeline: text encoder, diffusion model, VAE)
+#   --diffusion-fa  use flash attention in the diffusion model only
+# The wider one is what relieves the text-encoder/VAE phases (the real 8 GB peak on this card),
+# so it gets its own checkbox that defaults on; --diffusion-fa stays as the conservative
+# narrow switch.  They never override each other — both are forwarded verbatim.
+FA_FLAG = '--fa'
+# Reference-image preprocessing.  img2img / qwen_edit re-encode the source image through the
+# VAE, and an oversized input makes that encode allocate a huge activation and die on a small
+# card.  sd-server takes a key-value list here, and this project's tested value caps the VAE
+# input via the qwen preset at 800000 pixels.  Kept as a free-form string so any
+# backend key can be appended, with the default shown and a one-click restore next to it.
+REF_IMAGE_ARGS_FLAG = '--ref-image-args'
+REF_IMAGE_ARGS_DEFAULT = 'preset=qwen,vae_input_max_pixels=800000'
 
 
 def valid_vram_reserve(value):
@@ -423,6 +454,19 @@ def migrate_vae_flags(text):
     return ' '.join(remaining), on_cpu, tiling
 
 
+def migrate_fa_flag(text):
+    """Lift a hand-written --fa out of 「額外指令」 into the new 全流程 checkbox.
+
+    Returns (remaining extra args, found).  --fa is a boolean switch with no value, so the
+    whole token is removed; everything else is left exactly as typed, and the text is only
+    rewritten when the flag was actually found.
+    """
+    source = str(text or '').split()
+    remaining = [token for token in source if token.lower() != FA_FLAG]
+    found = len(remaining) != len(source)
+    return (' '.join(remaining) if found else str(text or '')), found
+
+
 def migrate_hires_upscalers_dir(text):
     """Lift a hand-written --hires-upscalers-dir out of 「額外指令」 into its own field.
 
@@ -449,6 +493,61 @@ def migrate_hires_upscalers_dir(text):
     if not found:
         return str(text or ''), ''  # untouched: quoting of other values stays intact
     return ' '.join(remaining), found
+
+
+def valid_ref_image_args(value):
+    """--ref-image-args takes a comma-separated key=value list; say what cannot be one.
+
+    Empty is legal and means «do not send the flag».  A flag name (the field/flag mix-up)
+    or a line break cannot be an argv value, so both are refused.  The keys belong to the
+    backend, so they are deliberately not whitelisted: a typo must fail loudly at launch
+    instead of being silently dropped here.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return True
+    if looks_like_flag(text) or any(char in text for char in (chr(13), chr(10))):
+        return False
+    parts = [part.strip() for part in text.split(",")]
+    return all(parts) and all("=" in part for part in parts)
+
+
+def migrate_ref_image_args(text):
+    """Lift a hand-written --ref-image-args out of 「額外指令」 into its own field.
+
+    Both spellings are recognised (--ref-image-args VALUE and --ref-image-args=VALUE) and the
+    value may be quoted, because it always carries '=' and often spaces as well.  A value that
+    starts with '-' is treated as the next flag rather than a value, so a bare
+    «--ref-image-args --fa» never swallows the following switch.  Returns (remaining extra
+    args, value); the text is only rewritten when the flag was actually found.
+    """
+    source = str(text or "")
+    flag = REF_IMAGE_ARGS_FLAG
+    index = source.find(flag)
+    while index != -1 and index > 0 and not source[index - 1].isspace():
+        index = source.find(flag, index + 1)  # only a whole token counts
+    if index == -1:
+        return source, ""
+    before = source[:index].rstrip()
+    rest = source[index + len(flag):]
+    if rest.startswith("="):
+        rest = rest[1:]
+    else:
+        rest = rest.lstrip(" \t")
+    if rest[:1] in ('"', "'"):
+        quote = rest[0]
+        close = rest.find(quote, 1)
+        value, after = (rest[1:close], rest[close + 1:]) if close != -1 else (rest[1:], "")
+    else:
+        tokens = rest.split(None, 1)
+        if tokens and not tokens[0].startswith("-"):
+            value = tokens[0]
+            after = tokens[1] if len(tokens) > 1 else ""
+        else:
+            value, after = "", rest  # bare flag: keep the next switch intact
+    return " ".join((before + " " + after).split()), value
 
 
 def looks_like_flag(value):
@@ -543,11 +642,12 @@ def hires_dir_warning(hires_upscalers_dir, base):
 
 
 def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=None, vision=False,
-                     cache_mode='off', diffusion_fa=False, conditioning_cache_size='default',
+                     cache_mode='off', diffusion_fa=False, fa=True, conditioning_cache_size='default',
                      spectrum_w=SPECTRUM_W_DEFAULT, extra_args='', max_vram_reserve=0,
                      prefix_cache_disabled=False, vae_on_cpu=False, vae_tiling=False,
                      hires_upscalers_dir='', cache_threshold=CACHE_THRESHOLD_DEFAULT,
-                     cache_warmup=CACHE_WARMUP_DEFAULT, vae_relative_tile_size=VAE_RELATIVE_TILE_DEFAULT):
+                     cache_warmup=CACHE_WARMUP_DEFAULT, vae_relative_tile_size=VAE_RELATIVE_TILE_DEFAULT,
+                     ref_image_args=''):
     if vision and not str((FILES if models is None else models).get('llm_vision', '')).strip():
         raise ValueError('Qwen 指令修圖需要選擇視覺 mmproj 檔案')
     try:
@@ -599,6 +699,12 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
         raise ValueError('Flash Attention 必須為開啟或關閉')
     if diffusion_fa:
         cmd.append('--diffusion-fa')
+    # --fa is the wider switch (whole pipeline) and defaults on; --diffusion-fa above is the
+    # narrow one.  Both are independent flags, never alternatives.
+    if not isinstance(fa, bool):
+        raise ValueError('--fa（全流程 Flash Attention）必須為開啟或關閉')
+    if fa:
+        cmd.append(FA_FLAG)
     # Optional Viggle adapter is never applied at startup; the native API
     # supplies it per task.  Keep the original safetensors untouched.
     viggle = base / 'IMAGE-MODELS' / 'loras' / 'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors'
@@ -628,6 +734,14 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
                 raise ValueError('VAE 分塊相對大小請留空，或填 0.01～1.0（如 0.5），'
                                  '或明確尺寸（如 512x768）')
             cmd.extend(('--vae-relative-tile-size', tile_size))
+    # Reference-image preprocessing (img2img / qwen_edit): a key-value list.  Empty＝不送，
+    # 後端用預設；填了不是 key=value 的東西會擋下啟動，因為那一定不是可用的 argv 值。
+    ref_image = str(ref_image_args or '').strip()
+    if not valid_ref_image_args(ref_image):
+        raise ValueError('--ref-image-args 請留空，或填 key=value 的逗號清單'
+                         f'（預設 {REF_IMAGE_ARGS_DEFAULT}）')
+    if ref_image:
+        cmd.extend((REF_IMAGE_ARGS_FLAG, ref_image))
     # Hi-res upscalers are discovered by directory at launch time, and the page's 放大方法
     # dropdown is fed by /sdapi/v1/upscalers, so an unwired directory looks like "the model
     # does nothing".  Relative values are resolved against the project root (the same rule the
@@ -670,6 +784,10 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
                              token.lower().startswith(HIRES_UPSCALERS_DIR_FLAG + '=') for token in tokens):
             raise ValueError(f'{HIRES_UPSCALERS_DIR_FLAG} 已在額外指令填寫；請清空「Hi-res 放大器目錄」欄位'
                              '改用它，或清掉額外指令中的該參數')
+        if ref_image and any(token.lower() == REF_IMAGE_ARGS_FLAG or
+                             token.lower().startswith(REF_IMAGE_ARGS_FLAG + '=') for token in tokens):
+            raise ValueError(f'{REF_IMAGE_ARGS_FLAG} 已在額外指令填寫；請清空「參考圖參數」欄位'
+                             '改用它，或清掉額外指令中的該參數')
         cmd.extend(tokens)
     return cmd
 
@@ -695,6 +813,8 @@ def build_cmd_from_settings(base, port, settings, vision=False, offload=None):
         vision=vision,
         cache_mode=settings.get('cache_mode', 'off'),
         diffusion_fa=settings.get('diffusion_fa', False),
+        # --fa 預設開啟（全流程加速；只有存檔明確寫 False 才關掉），與 --diffusion-fa 並存。
+        fa=settings.get('fa') is not False,
         conditioning_cache_size=settings.get('conditioning_cache_size', 'default'),
         spectrum_w=settings.get('spectrum_w', SPECTRUM_W_DEFAULT),
         extra_args=settings.get('extra_args', ''),
@@ -709,7 +829,10 @@ def build_cmd_from_settings(base, port, settings, vision=False, offload=None):
         # 舊設定檔沒有這兩個欄位時沿用保守預設（dbcache 才會用到；off／spectrum 忽略）。
         cache_threshold=settings.get('cache_threshold', CACHE_THRESHOLD_DEFAULT),
         cache_warmup=settings.get('cache_warmup', CACHE_WARMUP_DEFAULT),
-        vae_relative_tile_size=settings.get('vae_relative_tile_size', VAE_RELATIVE_TILE_DEFAULT))
+        vae_relative_tile_size=settings.get('vae_relative_tile_size', VAE_RELATIVE_TILE_DEFAULT),
+        # 參考圖參數：舊存檔沒有這個欄位時沿用實測預設（preset=qwen,vae_input_max_pixels=800000），
+        # 這樣「切換模式重啟」不會把圖生圖需要的防爆顯存設定悄悄拿掉。
+        ref_image_args=settings.get('ref_image_args', REF_IMAGE_ARGS_DEFAULT))
 
 
 def supports_conditioning_cache(executable):
@@ -887,13 +1010,23 @@ class ImageApp:
         self.spectrum_w = tk.StringVar(value=saved.get('spectrum_w')
             if valid_spectrum_w(saved.get('spectrum_w')) else SPECTRUM_W_DEFAULT)
         self.diffusion_fa = tk.BooleanVar(value=saved.get('diffusion_fa') is True)
+        # --fa 全流程 Flash Attention：預設開啟，只有存檔明確寫 False 才關掉。
+        self.fa = tk.BooleanVar(value=saved.get('fa') is not False or _legacy_fa)
         self.conditioning_cache_size = tk.StringVar(value=saved.get('conditioning_cache_size')
             if valid_conditioning_cache_size(saved.get('conditioning_cache_size')) else 'default')
         _saved_extra = saved.get('extra_args')
         _saved_extra, _legacy_vae_cpu, _legacy_vae_tiling = migrate_vae_flags(
             _saved_extra if isinstance(_saved_extra, str) and len(_saved_extra) <= MAX_EXTRA_ARGS else '')
+        _saved_extra, _legacy_fa = migrate_fa_flag(_saved_extra)
         _saved_extra, _legacy_hires_dir = migrate_hires_upscalers_dir(_saved_extra)
+        _saved_extra, _legacy_ref_image = migrate_ref_image_args(_saved_extra)
         self.extra_args = tk.StringVar(value=_saved_extra)
+        # 參考圖參數（--ref-image-args）：存檔有合法值（含使用者刻意留空）就照用，否則沿用實測預設，
+        # 或吃下從「額外指令」搬過來的舊寫法。留空＝不送此參數。
+        _saved_ref = saved.get('ref_image_args')
+        if not (isinstance(_saved_ref, str) and valid_ref_image_args(_saved_ref)):
+            _saved_ref = _legacy_ref_image or REF_IMAGE_ARGS_DEFAULT
+        self.ref_image_args = tk.StringVar(value=_saved_ref)
         self.max_vram_reserve = tk.StringVar(value=str(normalise_vram_reserve(
             saved.get('max_vram_reserve_gib', saved.get('max_vram_reserve')))))
         self.prefix_cache_disabled = tk.BooleanVar(value=saved.get('prefix_cache_disabled') is True)
@@ -1145,14 +1278,20 @@ class ImageApp:
                         '加速選項停止後再選、重啟生效。').pack(side='left', padx=(4, 0))
         speed_row = ttk.Frame(frame)
         speed_row.pack(fill='x', pady=(0, 5))
-        self.fa_box = ttk.Checkbutton(speed_row, text='Flash Attention（diffusion；可能省顯存）',
+        self.fa_box = ttk.Checkbutton(speed_row, text='Flash Attention（僅擴散模型）',
                                       variable=self.diffusion_fa)
         self.fa_box.pack(side='left', padx=(0, 12))
+        self.fa_all_box = ttk.Checkbutton(speed_row, text='Flash Attention（全流程，預設開啟）',
+                                          variable=self.fa)
+        self.fa_all_box.pack(side='left', padx=(0, 12))
         ttk.Label(speed_row, text='Conditioning cache：').pack(side='left')
         self.conditioning_box = ttk.Combobox(speed_row, textvariable=self.conditioning_cache_size,
                                             values=('default', '0', '4', '8'), state='normal', width=12)
         self.conditioning_box.pack(side='left', padx=(0, 8))
-        hint(speed_row, 'Flash Attention：用 --diffusion-fa，通常省顯存、CUDA 上多半也更快。\n\n'
+        hint(speed_row, '兩顆 Flash Attention 是 sd-server 的兩個獨立旗標，互不取代：\n'
+                        '「僅擴散模型」送 --diffusion-fa：只在擴散模型用 Flash Attention（較保守）。\n'
+                        '「全流程」送 --fa：文字編碼、擴散模型與 VAE 全流程都開（預設開啟）；\n'
+                        '8 GB 卡上文字編碼／解碼階段正是顯存高峰，開這個通常最省顯存。兩者可同時勾選。\n\n'
                         'Conditioning cache：可手動輸入 default 或非負整數；default 沿用後端預設。\n'
                         '新版 runtime（master-929 起）支援，舊版 runtime 選數字會阻止啟動；'
                         '容量過大可能增加 RAM／顯存用量。').pack(side='left', padx=(4, 0))
@@ -1165,6 +1304,28 @@ class ImageApp:
         hint(extra_row, '額外指令原樣接在啟動指令最後（留空＝不送；値含空格請用雙引號包住）。\n'
                         '控制窗已管理的參數（模型欄位、埠、--serve-html-path、--offload-to-cpu、'
                         '--cache-mode 等）會被擋下並說明原因。').pack(side='left', padx=(4, 0))
+        ref_row = ttk.Frame(frame)
+        ref_row.pack(fill='x', pady=(0, 3))
+        ttk.Label(ref_row, text='參考圖參數（圖生圖用）：').pack(side='left')
+        self.ref_image_entry = ttk.Entry(ref_row, textvariable=self.ref_image_args, width=42)
+        self.ref_image_entry.pack(side='left', padx=(0, 6))
+        self.ref_image_reset = ttk.Button(ref_row, text='還原預設',
+                                          command=lambda: self.ref_image_args.set(REF_IMAGE_ARGS_DEFAULT))
+        self.ref_image_reset.pack(side='left', padx=(0, 4))
+        ttk.Button(ref_row, text='清空',
+                   command=lambda: self.ref_image_args.set('')).pack(side='left')
+        hint(ref_row, '送 --ref-image-args：設定圖生圖／Qwen 指令修圖時參考圖的處理方式。\n'
+                      f'預設值 {REF_IMAGE_ARGS_DEFAULT}：preset=qwen 走 Qwen 專用前處理，\n'
+                      'vae_input_max_pixels=800000 把 VAE 看到的輸入圖上限壓在約 80 萬像素，\n'
+                      '避免原圖過大時在 VAE 編碼階段爆顯存（圖生圖最常見的爆點）。\n'
+                      '可自由增減 key=value（逗號分隔），例如再調大上限或換 preset；\n'
+                      '留空＝不送此參數（後端用預設）。改壞了按「還原預設」即可回復原值。\n'
+                      '執行期間鎖定、重啟生效；若以前手寫在「額外指令」，載入時會自動搬進本欄。'
+                      ).pack(side='left', padx=(4, 0))
+        # 輸入框下方固定標注預設值（並在格式錯誤時當場轉紅），避免改壞了改不回來。
+        self.ref_image_hint = ttk.Label(frame, text=f'預設值：{REF_IMAGE_ARGS_DEFAULT}', foreground='#555')
+        self.ref_image_hint.pack(anchor='w', padx=6)
+        self.ref_image_args.trace_add('write', lambda *_: self.sync_ref_image_hint())
         vae_row = ttk.Frame(frame)
         vae_row.pack(fill='x', padx=6, pady=(0, 3))
         ttk.Label(vae_row, text='VAE 解碼：').pack(side='left')
@@ -1306,6 +1467,7 @@ class ImageApp:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.sync_cache_controls()
         self.sync_vae_tile_controls()
+        self.sync_ref_image_hint()
         self.vae_tiling.trace_add('write', lambda *_: self.sync_vae_tile_controls())
         # 切換生圖模型 → 自動套用綁定模板（沒有綁定則套預設模板）。
         self.models[self._TPL_KEY].trace_add('write', lambda *_: self._tpl_on_model_change())
@@ -1673,10 +1835,22 @@ class ImageApp:
         else:
             self.vae_tile_hint.config(text='', foreground='#555')
 
+    def sync_ref_image_hint(self):
+        """參考圖參數欄下方永遠顯示預設值；格式不對時當場標紅，提醒可按「還原預設」。"""
+        text = self.ref_image_args.get().strip()
+        if text and not valid_ref_image_args(text):
+            self.ref_image_hint.config(
+                text=f'格式請為 key=value（逗號分隔），或留空；預設值：{REF_IMAGE_ARGS_DEFAULT}',
+                foreground='#c0392b')
+        else:
+            self.ref_image_hint.config(text=f'預設值：{REF_IMAGE_ARGS_DEFAULT}', foreground='#555')
+
     def settings(self):
         return {'port': self.port.get(), 'offload': self.offload.get(), 'cache_mode': self.cache_mode.get(),
                 'spectrum_w': self.spectrum_w.get(),
                 'diffusion_fa': self.diffusion_fa.get(),
+                'fa': self.fa.get(),
+                'ref_image_args': self.ref_image_args.get(),
                 'conditioning_cache_size': self.conditioning_cache_size.get(),
                 'extra_args': self.extra_args.get(),
                 'max_vram_reserve_gib': self.max_vram_reserve.get(),
@@ -1780,6 +1954,9 @@ class ImageApp:
             self.port_entry.config(state='disabled')
             self.cache_box.config(state='disabled')
             self.fa_box.config(state='disabled')
+            self.fa_all_box.config(state='disabled')
+            self.ref_image_entry.config(state='disabled')
+            self.ref_image_reset.config(state='disabled')
             self.conditioning_box.config(state='disabled')
             self.extra_args_entry.config(state='disabled')
             self.max_vram_box.config(state='disabled')
@@ -1984,6 +2161,9 @@ class ImageApp:
         self.port_entry.config(state='normal')
         self.cache_box.config(state='readonly')
         self.fa_box.config(state='normal')
+        self.fa_all_box.config(state='normal')
+        self.ref_image_entry.config(state='normal')
+        self.ref_image_reset.config(state='normal')
         self.conditioning_box.config(state='normal')
         self.extra_args_entry.config(state='normal')
         self.max_vram_box.config(state='normal')

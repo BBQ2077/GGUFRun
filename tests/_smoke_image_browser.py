@@ -23,6 +23,7 @@ HTML = (ROOT / 'assets/image-web.html').read_bytes()
 class Fake(BaseHTTPRequestHandler):
     calls = []
     job_size = (512, 1024)
+    model_name = 'fake-only'
     upscalers = None   # None → 404：模擬「伺服器還在載入模型，放大器清單尚未就緒」
     def log_message(self, *args):
         pass
@@ -37,7 +38,7 @@ class Fake(BaseHTTPRequestHandler):
         else:
             content = {'/': HTML, '/sdapi/v1/samplers': b'[{"name":"Euler"},{"name":"DDIM"}]',
                        '/sdapi/v1/loras': b'[{"name":"NSFW Qwen Lora","path":"NSFW Qwen Lora.safetensors"},{"name":"styleX","path":"styleX.safetensors"},{"name":"Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf","path":"Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors"}]',
-                       '/sdapi/v1/options': b'{"sd_model_checkpoint":"fake-only"}',
+                       '/sdapi/v1/options': json.dumps({'sd_model_checkpoint': type(self).model_name}).encode(),
                        '/sdapi/v1/upscalers': type(self).upscalers}.get(route)
         if content is None:
             self.send_error(404)
@@ -82,18 +83,21 @@ class Fake(BaseHTTPRequestHandler):
                     # native txt2img hires (turbo path): result is the upscaled target size
                     assert request['hires']['enabled'] is True
                     type(self).job_size = (request['hires']['target_width'], request['hires']['target_height'])
-                if request.get('lora'):
-                    # Turbo text2img now uses the native branch (it needs custom_sigmas + hires),
-                    # so it no longer carries the Qwen-Edit ref_images field.  The server accepts
-                    # it either way; assert only that no references leaked in.
+                if request.get('lora') or request.get('sample_params',{}).get('custom_sigmas'):
+                    # Turbo text2img uses the native branch (it needs custom_sigmas + hires), so it
+                    # no longer carries the Qwen-Edit ref_images field.  A fused viggle GGUF carries
+                    # the same sigmas but no LoRA (the turbo weights already live in the checkpoint).
                     assert request.get('ref_images', []) == []
-                    assert request['lora'][-1] == {'path':'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors','multiplier':1}
-                    previous=request['lora'][:-1]
-                    assert len(previous)<=1 and all(item['path']=='NSFW Qwen Lora.safetensors' and 0<=item['multiplier']<=2 for item in previous), previous
+                    if any('viggle' in item['path'] for item in request.get('lora') or []):
+                        assert request['lora'][-1] == {'path':'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors','multiplier':1}
+                        previous=request['lora'][:-1]
+                        assert len(previous)<=1 and all(item['path']=='NSFW Qwen Lora.safetensors' and 0<=item['multiplier']<=2 for item in previous), previous
+                    else:
+                        assert not any('viggle' in item['path'] for item in request.get('lora') or []), '融合模型不該再掛 Viggle LoRA'
                     params=request['sample_params']
-                    assert params['sample_steps']==6 and params['sample_method']=='euler'
+                    assert params['sample_steps'] in (6,8) and params['sample_method']=='euler'
                     assert params['guidance']=={'txt_cfg':1}
-                    assert len(params['custom_sigmas'])==7 and params['custom_sigmas'][-1]==0
+                    assert len(params['custom_sigmas'])==params['sample_steps']+1 and params['custom_sigmas'][-1]==0
                     # 6-step turbo and Hi-res may now be combined: both blocks must survive.
                     if request.get('hires'):
                         assert request['hires']['enabled'] is True
@@ -506,7 +510,7 @@ async def main():
                 print('img2img hires: mask+Hi-res refused locally with a clear reason',flush=True)
                 assert await evaluate("document.querySelector('#offload')===null")
                 assert mode['offload'] is True
-                await evaluate("document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='6step';document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#prompt').value='turbo apple';document.querySelector('#form').requestSubmit();void 0")
+                await evaluate("document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='6step';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#prompt').value='turbo apple';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.some(t=>t.body.viggleTurbo)"):break
                     await asyncio.sleep(.1)
@@ -518,10 +522,27 @@ async def main():
                     await asyncio.sleep(.15)
                 else:raise RuntimeError('Viggle task not saved: '+str(await evaluate("document.querySelector('#status').textContent")))
                 assert mode['offload'] is True
-                await evaluate("document.querySelector('#viggle').value='off';void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));void 0")
                 print('viggle: opt-in sends fused LoRA, 7 sigmas, 6 Euler steps and saves image',flush=True)
+                # Browser -> queue snapshot -> fake native endpoint -> saved PNG: 8-step dense text.
+                await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#steps').value='8';document.querySelector('#prompt').value='dense text';document.querySelector('#form').requestSubmit();void 0")
+                for _ in range(80):
+                    if await evaluate("queue.tasks.length===1"):break
+                    await asyncio.sleep(.1)
+                else:raise RuntimeError('Viggle 8-step task not queued: '+str(await evaluate("document.querySelector('#status').textContent")))
+                assert json.loads(await evaluate("JSON.stringify(queue.tasks[0].body)"))['steps']==8
+                await evaluate("document.querySelector('#run-queue').click();void 0")
+                for _ in range(80):
+                    if await evaluate("queue.tasks.length===0 && !queue.running"):break
+                    await asyncio.sleep(.15)
+                else:raise RuntimeError('Viggle 8-step task not saved: '+str(await evaluate("document.querySelector('#status').textContent")))
+                eight=[v for p,v in Fake.calls if p=='/sdcpp/v1/img_gen' and v.get('prompt')=='dense text'][-1]
+                assert eight['sample_params']['sample_steps']==8 and len(eight['sample_params']['custom_sigmas'])==9
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));void 0")
+                print('viggle: 8 Euler steps, 9 sigmas and saved image',flush=True)
+
                 # 6-step turbo + Hi-res：以前前端硬擋，後端其實可以。兩個區塊都要留著送出。
-                await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#enable-hr').checked=true;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#hr-scale').value='2';document.querySelector('#hr-upscaler').value='Lanczos';document.querySelector('#prompt').value='turbo hires apple';document.querySelector('#form').requestSubmit();void 0")
+                await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=true;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#hr-scale').value='2';document.querySelector('#hr-upscaler').value='Lanczos';document.querySelector('#prompt').value='turbo hires apple';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
                     await asyncio.sleep(.1)
@@ -540,7 +561,7 @@ async def main():
                 assert len(turbo_hires['sample_params']['custom_sigmas'])==7
                 assert turbo_hires['hires']['scale']==2 and turbo_hires['hires']['target_width']==512
                 print('viggle+hires: 6-step sigmas and Hi-res block sent together, saved 512x512',flush=True)
-                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));void 0")
                 # 純 Hi-res：改動強度 0 → 第一段不重畫（後端 t_enc 0 步），只放大＋低去噪。
                 await evaluate("document.querySelector('#mode').value='img2img';document.querySelector('#mode').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=true;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#hr-scale').value='1';document.querySelector('#hr-upscaler').value='Lanczos';document.querySelector('#denoising-strength').value='0';document.querySelector('#prompt').value='';void 0")
                 await evaluate("(async()=>{const c=document.createElement('canvas');c.width=64;c.height=64;c.getContext('2d').fillRect(0,0,64,64);const blob=await new Promise(r=>c.toBlob(r,'image/png'));const dt=new DataTransfer();dt.items.add(new File([blob],'pure-hires.png',{type:'image/png'}));document.querySelector('#source-file').files=dt.files;document.querySelector('#source-file').dispatchEvent(new Event('change'));})()")
@@ -563,7 +584,7 @@ async def main():
                 else:raise RuntimeError('純 Hi-res 未完成：'+str(await evaluate("document.querySelector('#status').textContent")))
                 assert any(path=='/sdapi/v1/img2img' and data.get('enable_hr') for path,data in Fake.calls if isinstance(data,dict)) is False
                 print('pure hires: strength 0 keeps stage 1 out and only runs upscale + 2nd pass',flush=True)
-                await evaluate("document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='off';document.querySelector('#denoising-strength').value='0.65';document.querySelector('#hr-scale').value='1.5';document.querySelector('#mode').value='txt2img';document.querySelector('#mode').dispatchEvent(new Event('change'));void 0")
+                await evaluate("document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#denoising-strength').value='0.65';document.querySelector('#hr-scale').value='1.5';document.querySelector('#mode').value='txt2img';document.querySelector('#mode').dispatchEvent(new Event('change'));void 0")
                 # Reproduce a cached image returned 1920x1088 for a 1920x1080 request.
                 calls_before=len(Fake.calls)
                 await evaluate("(async()=>{const c=document.createElement('canvas');c.width=1920;c.height=1088;const img=c.toDataURL('image/png').split(',')[1];const body={prompt:'rounded height',width:1920,height:1080,steps:6,cfg_scale:1,seed:3236843848,sampler_name:'Euler',viggleTurbo:true};queue.tasks=[{id:987654,body,status:'failed',error:'所填尺寸與 PNG 實際尺寸不符',startedAt:Date.now()}];unsavedImages.set(987654,img);queue.notify();queue.retry(987654);document.querySelector('#run-queue').click();})()")
@@ -591,7 +612,7 @@ async def main():
                 nsfw_calls=[v for p,v in Fake.calls if p=='/sdapi/v1/txt2img' and v.get('lora')]
                 assert nsfw_calls and nsfw_calls[-1]['lora'] == [{'path':'NSFW Qwen Lora.safetensors','multiplier':1.3}], nsfw_calls[-1] if nsfw_calls else None
                 print('multi-lora: standing NSFW selector sent through sdapi lora array',flush=True)
-                await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#prompt').value='viggle plus nsfw';document.querySelector('#form').requestSubmit();void 0")
+                await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#prompt').value='viggle plus nsfw';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
                     await asyncio.sleep(.1)
@@ -604,7 +625,7 @@ async def main():
                 else:raise RuntimeError('Viggle+NSFW task not finished: '+str(await evaluate("document.querySelector('#status').textContent")))
                 combined=[v for p,v in Fake.calls if p=='/sdcpp/v1/img_gen' and v.get('lora') and len(v['lora'])==2][-1]
                 assert combined['lora'][0] == {'path':'NSFW Qwen Lora.safetensors','multiplier':1.3} and combined['sample_params']['sample_steps']==6, combined['lora']
-                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#nsfw-lora').value='off';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#nsfw-lora').value='off';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
                 await evaluate("document.querySelector('#prompt').value='list lora only';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
@@ -621,7 +642,7 @@ async def main():
                 assert listed['lora'] == [{'path':'styleX.safetensors','multiplier':1}] and listed['steps']==20, listed
                 assert await evaluate("document.querySelector('#nsfw-lora').value") == 'off'
                 print('multi-lora: checklist sends one LoRA, queue summary shows it, base 20 steps kept',flush=True)
-                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#nsfw-strength').value='1';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#nsfw-strength').value='1';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
                 await evaluate("document.querySelector('#mode').value='img2img';document.querySelector('#mode').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=false;document.querySelector('#prompt').value='';void 0")
                 await evaluate("(async()=>{const c=document.createElement('canvas');c.width=32;c.height=64;const x=c.getContext('2d');x.fillStyle='white';x.fillRect(0,0,32,64);const blob=await new Promise(resolve=>c.toBlob(resolve,'image/png'));for(const id of ['source-file','mask-file']){const dt=new DataTransfer();dt.items.add(new File([blob],id+'.png',{type:'image/png'}));document.querySelector('#'+id).files=dt.files;document.querySelector('#'+id).dispatchEvent(new Event('change'));}})()")
                 for _ in range(80):
@@ -642,6 +663,36 @@ async def main():
                 assert await evaluate("document.querySelector('#tasklist').children.length") == 0
                 assert mode['offload'] is True
                 print('img2img mask: native mask and blank prompt; legacy queue offload ignored',flush=True)
+                # 載入作者轉好的 Viggle 融合 GGUF：頁面要自動開 Viggle、自動 6 步，且不可再疊 LoRA（會套兩次）。
+                await evaluate("document.querySelector('#mode').value='txt2img';document.querySelector('#mode').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#steps').value='20';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]').forEach(c=>{if(c.checked)c.click();});void 0")
+                Fake.model_name='qwen-image-2.1-viggle-turbo-fused-Q4_K_M'
+                await evaluate("document.querySelector('#prompt').value='fused gguf apple';void 0")
+                await evaluate("discover();void 0")
+                for _ in range(40):
+                    if await evaluate("document.querySelector('#viggle').value==='6step'"):break
+                    await asyncio.sleep(.1)
+                else:raise RuntimeError('融合 GGUF 未自動切到 Viggle：'+str(await evaluate("document.querySelector('#model').textContent")))
+                assert await evaluate("document.querySelector('#steps').value")=='6', await evaluate("document.querySelector('#steps').value")
+                assert 'Viggle 融合模型' in await evaluate("document.querySelector('#model').textContent")
+                await evaluate("document.querySelector('#form').requestSubmit();void 0")
+                for _ in range(80):
+                    if await evaluate("queue.tasks.length===1"):break
+                    await asyncio.sleep(.1)
+                else:raise RuntimeError('融合 GGUF 任務未入列：'+str(await evaluate("document.querySelector('#status').textContent")))
+                assert await evaluate("queue.tasks[0].body.viggleTurbo===true")
+                assert await evaluate("!queue.tasks[0].body.lora||!queue.tasks[0].body.lora.some(l=>/viggle/i.test(l.path))"), '融合 GGUF 不該再加掛 Viggle LoRA'
+                calls_before=len(Fake.calls)
+                await evaluate("document.querySelector('#run-queue').click();void 0")
+                for _ in range(80):
+                    if await evaluate("queue.tasks.length===0 && !queue.running"):break
+                    await asyncio.sleep(.15)
+                else:raise RuntimeError('融合 GGUF 未完成：'+str(await evaluate("document.querySelector('#status').textContent")))
+                fused=[v for p,v in Fake.calls[calls_before:] if p=='/sdcpp/v1/img_gen'][-1]
+                assert fused['sample_params']['sample_steps']==6 and fused['sample_params']['sample_method']=='euler', fused['sample_params']
+                assert not fused.get('lora'), fused.get('lora')
+                assert await evaluate("document.querySelector('#tasklist').children.length")==0
+                print('fused viggle gguf: auto 6 steps, no duplicate LoRA, saved image',flush=True)
+                Fake.model_name='fake-only'
         finally:
             if chrome and chrome.poll() is None:
                 subprocess.run(['taskkill', '/F', '/T', '/PID', str(chrome.pid)],
