@@ -594,24 +594,23 @@ async def main():
                 else:raise RuntimeError('Cached rounded PNG did not save: '+str(await evaluate("JSON.stringify({status:document.querySelector('#status').textContent,rows:queue.tasks.map(t=>({status:t.status,error:t.error})),file:document.querySelector('#result').textContent})")))
                 assert len(Fake.calls)==calls_before, 'Retry generated a duplicate image'
                 print('cached PNG retry: 1920x1080 requested, 1920x1088 saved without regeneration',flush=True)
-                # Multi-LoRA: standing NSFW selector, collapsible list, sdapi field and 6-step Viggle combination.
-                lora_ui = json.loads(await evaluate("JSON.stringify({nsfw:[...document.querySelector('#nsfw-lora').options].map(o=>o.value),disabled:document.querySelector('#nsfw-lora').disabled,rows:[...document.querySelectorAll('#lora-list .lora-item')].map(r=>r.dataset.path),collapsed:document.querySelector('#lora-fields').tagName==='DETAILS'&&!document.querySelector('#lora-fields').open,warning:document.querySelector('#lora-warning').textContent})"))
-                assert lora_ui['nsfw'] == ['off','NSFW Qwen Lora.safetensors'], lora_ui
-                assert lora_ui['disabled'] is False and lora_ui['rows'] == ['NSFW Qwen Lora.safetensors','styleX.safetensors'], lora_ui
+                # Multi-LoRA: unified checklist (NSFW weights are plain rows), sdapi field and 6-step Viggle combination.
+                lora_ui = json.loads(await evaluate("JSON.stringify({rows:[...document.querySelectorAll('#lora-list .lora-item')].map(r=>r.dataset.path),collapsed:document.querySelector('#lora-fields').tagName==='DETAILS'&&!document.querySelector('#lora-fields').open,warning:document.querySelector('#lora-warning').textContent,standing:document.querySelector('#nsfw-lora')===null})"))
+                assert lora_ui['standing'] and lora_ui['rows'] == ['NSFW Qwen Lora.safetensors','styleX.safetensors'], lora_ui
                 assert lora_ui['collapsed'] and lora_ui['warning'] == '', lora_ui
-                await evaluate("document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#prompt').value='standing nsfw';document.querySelector('#nsfw-lora').value='NSFW Qwen Lora.safetensors';document.querySelector('#nsfw-strength').value='1.3';document.querySelector('#form').requestSubmit();void 0")
+                await evaluate("document.querySelector('#width').value='256';document.querySelector('#height').value='256';document.querySelector('#prompt').value='standing nsfw';const r=document.querySelectorAll('#lora-list .lora-item')[0];r.querySelector('input[type=checkbox]').click();r.querySelector('input[type=number]').value='1.3';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
                     await asyncio.sleep(.1)
-                else:raise RuntimeError('NSFW LoRA task not queued')
+                else:raise RuntimeError('NSFW LoRA row not queued')
                 await evaluate("document.querySelector('#run-queue').click();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===0 && !queue.running"):break
                     await asyncio.sleep(.15)
-                else:raise RuntimeError('NSFW LoRA task not finished: '+str(await evaluate("document.querySelector('#status').textContent")))
+                else:raise RuntimeError('NSFW LoRA row not finished: '+str(await evaluate("document.querySelector('#status').textContent")))
                 nsfw_calls=[v for p,v in Fake.calls if p=='/sdapi/v1/txt2img' and v.get('lora')]
                 assert nsfw_calls and nsfw_calls[-1]['lora'] == [{'path':'NSFW Qwen Lora.safetensors','multiplier':1.3}], nsfw_calls[-1] if nsfw_calls else None
-                print('multi-lora: standing NSFW selector sent through sdapi lora array',flush=True)
+                print('multi-lora: NSFW row sent through sdapi lora array',flush=True)
                 await evaluate("document.querySelector('#viggle').value='6step';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#prompt').value='viggle plus nsfw';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
@@ -625,7 +624,7 @@ async def main():
                 else:raise RuntimeError('Viggle+NSFW task not finished: '+str(await evaluate("document.querySelector('#status').textContent")))
                 combined=[v for p,v in Fake.calls if p=='/sdcpp/v1/img_gen' and v.get('lora') and len(v['lora'])==2][-1]
                 assert combined['lora'][0] == {'path':'NSFW Qwen Lora.safetensors','multiplier':1.3} and combined['sample_params']['sample_steps']==6, combined['lora']
-                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#nsfw-lora').value='off';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[0].click();document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
                 await evaluate("document.querySelector('#prompt').value='list lora only';document.querySelector('#form').requestSubmit();void 0")
                 for _ in range(80):
                     if await evaluate("queue.tasks.length===1"):break
@@ -640,9 +639,9 @@ async def main():
                 else:raise RuntimeError('Checklist LoRA task not finished')
                 listed=[v for p,v in Fake.calls if p=='/sdapi/v1/txt2img' and v.get('lora')][-1]
                 assert listed['lora'] == [{'path':'styleX.safetensors','multiplier':1}] and listed['steps']==20, listed
-                assert await evaluate("document.querySelector('#nsfw-lora').value") == 'off'
+                assert await evaluate("document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[0].checked===false")
                 print('multi-lora: checklist sends one LoRA, queue summary shows it, base 20 steps kept',flush=True)
-                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#nsfw-strength').value='1';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
+                await evaluate("document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelectorAll('#lora-list .lora-item input[type=checkbox]')[1].click();void 0")
                 await evaluate("document.querySelector('#mode').value='img2img';document.querySelector('#mode').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=false;document.querySelector('#prompt').value='';void 0")
                 await evaluate("(async()=>{const c=document.createElement('canvas');c.width=32;c.height=64;const x=c.getContext('2d');x.fillStyle='white';x.fillRect(0,0,32,64);const blob=await new Promise(resolve=>c.toBlob(resolve,'image/png'));for(const id of ['source-file','mask-file']){const dt=new DataTransfer();dt.items.add(new File([blob],id+'.png',{type:'image/png'}));document.querySelector('#'+id).files=dt.files;document.querySelector('#'+id).dispatchEvent(new Event('change'));}})()")
                 for _ in range(80):
