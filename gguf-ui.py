@@ -16,9 +16,29 @@ llama-server GUI 控制台（本地模型管理｜可攜式：自動以本程式
 - 顯示狀態與即時日誌
 只用標準庫 tkinter，不需額外安裝。建議用系統 python3 執行。
 """
-import os, re, sys, subprocess, threading, time, socket, json, shutil, tempfile, queue, urllib.request, atexit, webbrowser
+import os, re, subprocess, threading, time, socket, json, shutil, tempfile, queue, urllib.request, atexit, webbrowser
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
+
+# 選配模組：沒有 llm_rocm.py／llm_exl3.py 也能跑一般 GGUF，只是少了 ROCm 預檢與 EXL3 支援
+try:
+    from llm_rocm import prepare_llama_launch
+except ImportError:
+    def prepare_llama_launch(command, base):
+        return os.environ.copy(), ""
+try:
+    import llm_exl3
+except ImportError:
+    class llm_exl3:  # noqa: N801  與真模組同名的替身：一律回報「不是 EXL3」
+        MODEL_DIR_NAME = "LLM-MODELS-EXL3"
+        VISION_MODES = ("off",)
+        NA_REASONS, EXL3_NOTES, LLAMA_ONLY = {}, {}, ()
+        GGUF_NA = {"vision": "需要 llm_exl3.py（EXL3 支援）"}
+        find_runtime = staticmethod(lambda base: None)
+        list_models = staticmethod(lambda base, draft=False: [])
+        is_exl3 = staticmethod(lambda path: False)
+        has_vision = staticmethod(lambda path: False)
+        find_servers = staticmethod(lambda runtime: [])
 
 try:                                    # 通用：以本程式所在資料夾為基準，不寫死路徑
     BASE = os.path.dirname(os.path.abspath(__file__))
@@ -46,6 +66,7 @@ def find_runtimes():
 
 
 RUNTIMES = find_runtimes()
+EXL3_RUNTIME = llm_exl3.find_runtime(BASE)   # EXL3 用獨立 Python runtime，不列在 llama-server 清單
 SRV = (os.path.join(RUNTIMES[0][1], "llama-server.exe") if RUNTIMES
        else os.path.join(RUNTIME_ROOT, "llama-official", "llama-server.exe"))
 # 本專案自己會用到的所有 runtime 目錄（判斷「殘留的測試 server」用）
@@ -392,6 +413,8 @@ def build_model_list():
             sz = "檔案不存在"
         out.append((f"[手動] {nm}   {sz}", p, "manual", e))
         seen.add(os.path.normcase(p))
+    for name, p, size in llm_exl3.list_models(BASE):     # LLM-MODELS-EXL3/ 的 EXL3 資料夾
+        out.append((llm_exl3.label(name, size), p, "exl3", None))
     return out
 
 
@@ -448,6 +471,36 @@ def spec_for_drafter(path, extra=None):
 FAMILY_TOKENS = ("gemma", "bonsai", "qwen", "minicpm", "spark", "phi", "mistral", "glm", "llama")
 
 
+# ---------- 「自訂指令」解析與投機旗標檢查 ----------
+# 本 build `llama-server.exe --help` 實查的投機旗標別名
+SPEC_FLAG_ALIASES = ("--spec-type", "-md", "--model-draft", "--spec-draft-model")
+
+
+def split_extra_args(text):
+    """把「自訂指令」拆成 argv；引號不成對等解析失敗時，整串當一個參數（與舊行為相同）。"""
+    try:
+        import shlex
+        parts = shlex.split(text, posix=False)
+        # posix=False 會保留引號，去掉成對的引號
+        return [q[1:-1] if len(q) >= 2 and q[0] == q[-1] and q[0] in ("\"", "'") else q
+                for q in parts if q]
+    except Exception:
+        return [text]
+
+
+def extra_spec_flags(parts):
+    """列出 argv 裡的投機旗標：[(索引, 旗標, 值)]；支援 `--flag 值` 與 `--flag=值` 兩種寫法。"""
+    out = []
+    for i, tok in enumerate(parts):
+        name, eq, val = tok.partition("=")
+        if name not in SPEC_FLAG_ALIASES:
+            continue
+        if not eq and i + 1 < len(parts):
+            val = parts[i + 1]
+        out.append((i, name, val))
+    return out
+
+
 def drafter_mismatch(main_path, drafter_path):
     """草稿模型必須與主模型同家族。回傳警告字串（'' ＝ 看起來相配）。
     實測：配錯的 DF 不會友善報錯，llama-server 會直接崩潰（0xC0000005）。"""
@@ -466,7 +519,7 @@ def drafter_mismatch(main_path, drafter_path):
 
 def build_drafter_list():
     """回傳 (下拉顯示清單, {顯示: 路徑})。特殊值："" = 自動配對、"-" = 不使用。"""
-    auto, none = "自動（依主模型配對）", "不使用外掛 DF（內建 MTP 仍會啟用）"
+    auto, none = "自動（依主模型配對）", "不使用外掛 DF（＝用主模型內建 MTP）"
     vals, mp = [auto, none], {auto: "", none: "-"}
     for fn, p, size in list_drafters():
         d = f"{fn}   {size / 2 ** 30:.2f} GiB"
@@ -483,6 +536,10 @@ def build_drafter_list():
         except Exception:
             sz = "檔案不存在"
         d = f"[手動] {e.get('label') or os.path.basename(p)}   {sz}"
+        vals.append(d)
+        mp[d] = p
+    for name, p, size in llm_exl3.list_models(BASE, draft=True):   # EXL3 草稿（DFlash2）
+        d = llm_exl3.label(name, size, draft=True)
         vals.append(d)
         mp[d] = p
     return vals, mp
@@ -551,7 +608,9 @@ ADV_LORA = [
 
 ADV_EXTRA = [
     ("", "extra_args", "自訂指令",
-     "直接附加到啟動指令最後。例：--lora-scaled x.gguf:1.5 -fa on"),
+     "直接附加到啟動指令最後。例：--lora-scaled x.gguf:1.5 -fa on\n"
+     "投機旗標（--spec-type／-md）寫這裡＝以你寫的為準，UI 不重複送自己的判斷。\n"
+     "主模型沒有內建 MTP 時，只要自己帶 -md <外掛 MTP 草稿> 就能用。"),
 ]
 
 ADV_MOE = [
@@ -761,18 +820,22 @@ class Tip:
 
     def __init__(self, widget, text):
         self.w, self.text, self.tip = widget, text, None
+        self.extra = ""   # 依目前引擎附加的說明（例：EXL3 不適用的原因）
         widget.bind("<Enter>", self._show, add="+")
         widget.bind("<Leave>", self._hide, add="+")
 
     def _show(self, _=None):
         if self.tip:
             return
+        body = "\n\n".join(t for t in (self.extra, self.text) if t)
+        if not body:
+            return
         x = self.w.winfo_rootx() + 16
         y = self.w.winfo_rooty() + self.w.winfo_height() + 4
         self.tip = tk.Toplevel(self.w)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        tk.Label(self.tip, text=self.text, background="#ffffe0", relief="solid",
+        tk.Label(self.tip, text=body, background="#ffffe0", relief="solid",
                  borderwidth=1, justify="left", padx=6, pady=3).pack()
 
     def _hide(self, _=None):
@@ -834,6 +897,7 @@ class App:
         self._ui_events = queue.Queue()
         self._closed = False
         self.active_port = None
+        self._engine_widgets = []   # [(欄位 key, widget, Tip, 原本 state)]：EXL3 時變灰／加說明
         self._active_lora_path = None
         self._lora_restart_note = None
         root.title(f"llama-server 控制台 — {BASE}")
@@ -898,10 +962,11 @@ class App:
                                        values=self._drafters)
         self.cb_drafter.pack(side="left", padx=4, pady=(0, 6))
         Tip(self.cb_drafter, "投機解碼用的草稿模型（DF / DSpark / MTP）。\n"
-                             "「自動」＝依主模型家族配對（同家族才不會崩潰）。\n"
-                             "「不使用外掛 DF」＝不用外掛檔；若主模型內建 MTP，會自動用內建 MTP。\n"
+                             "「自動」＝先依主模型家族配對外掛草稿模型；配不到時，\n"
+                             "        若主模型本身內建 MTP（nextn_predict_layers），會自動改用內建 MTP。\n"
+                             "「不使用外掛 DF」＝不用外掛檔，直接用主模型自己的內建 MTP。\n"
                              "--spec-type 依檔名自動判斷（mtp / dflash / dspark / eagle）。\n"
-                             "只在模式選「投機解碼」時才生效；選擇會自動記住（下次開啟還在）。")
+                             "只在模式選「投機解碼」時才生效；按「💾 儲存參數」後會記住（下次開啟還在）。")
         b_dadd = ttk.Button(row2, text="➕ 添加 DF", command=lambda: self._add_model("drafter"))
         b_dadd.pack(side="left", padx=2, pady=(0, 6))
         Tip(b_dadd, "手動添加草稿模型（DF）：可以是任何位置的 .gguf，會存進 models.json。\n"
@@ -929,9 +994,20 @@ class App:
         self._sync_model_fn = None
 
         def _sync_model(*_a):
+            self._apply_engine_ui()
             p = self.model_path()
             if not os.path.exists(p):
                 self.lbl_model.config(text="!! 找不到這個模型檔", foreground="#b00")
+                return
+            _dsel = self._drafter_map.get(self.drafter.get(), "")
+            if _dsel and _dsel != "-" and llm_exl3.is_exl3(_dsel) != llm_exl3.is_exl3(p):
+                # 草稿和主模型不同格式（EXL3／GGUF 不能混用）→ 改回自動配對；set 會再觸發一次本函式
+                self._log(f"[模型] 草稿 {os.path.basename(_dsel)} 和主模型格式不同"
+                          f"（{'EXL3' if llm_exl3.is_exl3(p) else 'GGUF'} 主模型），已改回「自動配對」\n")
+                self.drafter.set(self._drafters[0])
+                return
+            if llm_exl3.is_exl3(p):
+                self.lbl_model.config(**self._exl3_status(p))
                 return
             dr, spec, how = _resolve_drafter(p)
             gib = os.path.getsize(p) / 2 ** 30
@@ -974,7 +1050,12 @@ class App:
                 else:
                     txt = f"✅ {gib:.2f} GiB｜不使用草稿模型 → 純主模型解碼（Normal）"
             else:
-                txt = f"✅ {gib:.2f} GiB｜找不到可搭配的草稿模型 → 投機解碼會自動改用 Normal"
+                _nl = gguf_mtp_layers(p)
+                if _mode is not None and _mode.get() == "dspark" and _nl > 0:
+                    txt = (f"✅ {gib:.2f} GiB｜自動配對沒有外掛草稿 → 用主模型內建 MTP"
+                           f"（nextn_predict_layers={_nl}）")
+                else:
+                    txt = f"✅ {gib:.2f} GiB｜找不到可搭配的草稿模型 → 投機解碼會自動改用 Normal"
             self.lbl_model.config(text=txt + warn, foreground="#b70" if warn else "#2a7")
 
         self.model.trace_add("write", _sync_model)
@@ -988,7 +1069,7 @@ class App:
         _bar = ttk.Frame(inner)
         _bar.pack(fill="x", padx=10, pady=(8, 0))
         self.more = tk.BooleanVar(value=False)
-        self.btn_more = ttk.Button(_bar, text="▸ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數）",
+        self.btn_more = ttk.Button(_bar, text="▸ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數／視覺）",
                                    command=self._toggle_more)
         self.btn_more.pack(side="left")
 
@@ -1014,9 +1095,10 @@ class App:
             rb = ttk.Radiobutton(mf, text=lab, value=val, variable=self.mode)
             rb.pack(side="left", padx=4)
             Tip(rb, "只用主模型解碼，最單純、最省資源" if val == "normal"
-                    else "投機解碼：DF 選「自動」＝配外掛草稿模型（同家族才配，如 gemma→mtp）；\n"
-                         "DF 選「不使用外掛 DF」＝改用主模型自己內建的 MTP（需模型有 nextn_predict_layers）。\n"
-                         "若兩者都沒有，會以純主模型解碼啟動並在日誌提醒")
+                    else "投機解碼：DF 選「自動」＝先配外掛草稿模型（同家族才配，如 gemma→mtp）；\n"
+                         "自動配不到時，若主模型自己內建 MTP（nextn_predict_layers）就自動改用內建 MTP。\n"
+                         "DF 選「不使用外掛 DF」＝直接鎖定用主模型內建 MTP。\n"
+                         "兩者都沒有時，會以純主模型解碼啟動並在日誌提醒")
         # 模式切換時同步更新模型狀態列（DF 在 Normal 模式下不會生效的提醒）
         self.mode.trace_add("write", lambda *_a: _sync_model())
 
@@ -1025,22 +1107,26 @@ class App:
         cb_ctx = ttk.Combobox(cfg, textvariable=self.ctx, width=10,
                               values=["4096", "8192", "16384", "32768", "65536", "131072"])
         cb_ctx.grid(row=1, column=1, sticky="w")
-        Tip(cb_ctx, "模型一次能記住的 token 數。\n4096 = 模型原生訓練長度\n≥65536 必須勾「KV 放系統 RAM」")
+        self._engine_reg("ctx", cb_ctx, Tip(cb_ctx, "模型一次能記住的 token 數。\n4096 = 模型原生訓練長度\n≥65536 必須勾「KV 放系統 RAM」"))
         ttk.Label(cfg, text="一次能記住多少 token，越大越吃記憶體",
                   foreground="#666").grid(row=1, column=2, sticky="w", padx=6)
 
         # GPU 層數（-ngl / -ngld）
         ttk.Label(cfg, text="-ngl 主模型層數").grid(row=2, column=0, sticky="w", padx=6, pady=4)
         self.ngl = tk.StringVar(value="all")
-        ttk.Combobox(cfg, textvariable=self.ngl, width=10,
-                     values=["all", "auto", "999", "64", "48", "32"]).grid(row=2, column=1, sticky="w")
+        _cb_ngl = ttk.Combobox(cfg, textvariable=self.ngl, width=10,
+                               values=["all", "auto", "999", "64", "48", "32"])
+        _cb_ngl.grid(row=2, column=1, sticky="w")
+        self._engine_reg("ngl", _cb_ngl)
         ttk.Label(cfg, text="主模型放 GPU 的層數；all／auto = 不指定，由 llama.cpp 依顯存自動決定（填數字＝強制指定）",
                   foreground="#666").grid(row=2, column=2, sticky="w", padx=6)
 
         ttk.Label(cfg, text="-ngld draft 層數").grid(row=3, column=0, sticky="w", padx=6, pady=4)
         self.ngld = tk.StringVar(value="all")
-        ttk.Combobox(cfg, textvariable=self.ngld, width=10,
-                     values=["all", "auto", "999", "32", "16", "0"]).grid(row=3, column=1, sticky="w")
+        _cb_ngld = ttk.Combobox(cfg, textvariable=self.ngld, width=10,
+                                values=["all", "auto", "999", "32", "16", "0"])
+        _cb_ngld.grid(row=3, column=1, sticky="w")
+        self._engine_reg("ngld", _cb_ngld)
         ttk.Label(cfg, text="草稿模型放 GPU 的層數（僅 DSpark 生效；all／auto = 交給 llama.cpp 自動）",
                   foreground="#666").grid(row=3, column=2, sticky="w", padx=6)
 
@@ -1079,6 +1165,8 @@ class App:
         # LoRA 強度（scale）：非命令列旗標，改用啟動後 POST /lora-adapters 套用
         # （--lora-scaled 的 FNAME:SCALE 格式在 Windows 會與磁碟機代號 "D:" 衝突）
         self.adv["lora_scale"] = tk.StringVar(value="")
+        # EXL3 視覺塔（--vision off/gpu/ram）：放 adv 字典，設定記憶與模板會一起存
+        self.adv["vision"] = tk.StringVar(value="off")
 
         # 思考模式（-rea auto/on/off）：本 build 官方預設就是 auto
         ttk.Label(advf, text="思考模式（-rea）").grid(row=1, column=0, sticky="w", padx=6, pady=4)
@@ -1115,9 +1203,10 @@ class App:
         # 思考預算（--reasoning-budget）
         ttk.Label(advf, text="思考預算（--reasoning-budget）").grid(row=3, column=0, sticky="w", padx=6, pady=4)
         self.rbud = tk.StringVar(value="-1")
-        ttk.Combobox(advf, textvariable=self.rbud, width=10,
-                     values=["-1", "0", "64", "128", "256", "512", "1024", "2048", "4096"]).grid(
-            row=3, column=1, sticky="w")
+        _cb_rbud = ttk.Combobox(advf, textvariable=self.rbud, width=10,
+                                values=["-1", "0", "64", "128", "256", "512", "1024", "2048", "4096"])
+        _cb_rbud.grid(row=3, column=1, sticky="w")
+        self._engine_reg("rbud", _cb_rbud)
         ttk.Label(advf, text="限制思考長度，越小回覆越快｜0＝立即結束思考（官方語意）",
                   foreground="#666").grid(row=3, column=2, sticky="w", padx=6)
 
@@ -1131,11 +1220,11 @@ class App:
                              "VRAM 不夠時用來少放幾層專家上卡；填 0＝全部照 -ngl",
                   foreground="#666", justify="left", wraplength=430).grid(
             row=4, column=2, sticky="w", padx=6)
-        Tip(self.ncmoe, "旗標：--n-cpu-moe N（簡寫 -ncmoe）\n"
+        self._engine_reg("ncmoe", self.ncmoe, Tip(self.ncmoe, "旗標：--n-cpu-moe N（簡寫 -ncmoe）\n"
                         "把「前 N 層」的 MoE 專家權重留在系統 RAM，其餘層照 -ngl 放 GPU。\n"
                         "用途：顯存不夠時少放幾層專家上卡，避免爆 VRAM（生成會變慢）。\n"
                         "可填 0 到主模型的層數為止（層數看模型 header 的 block_count）。\n"
-                        "留空＝完全不送這個參數（llama.cpp 預設行為）。")
+                        "留空＝完全不送這個參數（llama.cpp 預設行為）。"))
 
         ttk.Label(advf, text="密集 FFN 放 CPU 層數 (-ncffn)").grid(
             row=5, column=0, sticky="w", padx=6, pady=4)
@@ -1145,23 +1234,38 @@ class App:
                              "這是給非 MoE（dense）模型用的；MoE 的專家權重請用上面的 -ncmoe",
                   foreground="#666", justify="left", wraplength=430).grid(
             row=5, column=2, sticky="w", padx=6)
-        Tip(self.ncffn, "旗標：--n-cpu-ffn N（簡寫 -ncffn）\n"
+        self._engine_reg("ncffn", self.ncffn, Tip(self.ncffn, "旗標：--n-cpu-ffn N（簡寫 -ncffn）\n"
                         "把「前 N 層」的密集 FFN 權重留在系統 RAM。\n"
-                        "官方說明：dense 模型用這個；MoE 的專家權重要用 --n-cpu-moe。")
+                        "官方說明：dense 模型用這個；MoE 的專家權重要用 --n-cpu-moe。"))
 
         opts = ttk.Frame(advf)
         opts.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=4)
         self.fa = tk.BooleanVar(value=True)
         self.nkvo = tk.BooleanVar(value=True)
-        for _i, (_txt, _var, _desc) in enumerate([
-                ("Flash-Attn（-fa on）", self.fa, "加速注意力計算並省記憶體，建議常開"),
-                ("KV 放系統 RAM（-nkvo）", self.nkvo, "KV 改放主記憶體，可跑大 Context 但生成變慢"),
-                ("Jinja 聊天模板（--jinja）", self.jinja,
+        for _i, (_key, _txt, _var, _desc) in enumerate([
+                ("fa", "Flash-Attn（-fa on）", self.fa, "加速注意力計算並省記憶體，建議常開"),
+                ("nkvo", "KV 放系統 RAM（-nkvo）", self.nkvo, "KV 改放主記憶體，可跑大 Context 但生成變慢"),
+                ("jinja", "Jinja 聊天模板（--jinja）", self.jinja,
                  "用模型內建的 Jinja 聊天模板（Gemma 等新模型需要）。本 build 預設已開；取消勾選＝送 --no-jinja")]):
             _chk = ttk.Checkbutton(opts, text=_txt, variable=_var)
             _chk.grid(row=_i, column=0, sticky="w")
             ttk.Label(opts, text=_desc, foreground="#666").grid(row=_i, column=1, sticky="w", padx=12)
-            Tip(_chk, _desc)
+            self._engine_reg(_key, _chk, Tip(_chk, _desc))
+
+        # 視覺（EXL3）：關閉／GPU／RAM
+        ttk.Label(advf, text="視覺（看圖，EXL3）").grid(row=7, column=0, sticky="w", padx=6, pady=4)
+        _cb_vis = ttk.Combobox(advf, textvariable=self.adv["vision"], width=10, state="readonly",
+                               values=list(llm_exl3.VISION_MODES))
+        _cb_vis.grid(row=7, column=1, sticky="w")
+        ttk.Label(advf, text="off＝不載入｜gpu＝視覺塔放顯卡（最快）\n"
+                             "ram＝放系統 RAM，看圖時才串流上顯卡（幾乎不佔顯存）",
+                  foreground="#666", justify="left").grid(row=7, column=2, sticky="w", padx=6)
+        self._engine_reg("vision", _cb_vis, Tip(_cb_vis, "旗標：--vision off|gpu|ram（EXL3 server）\n"
+                         "模型有視覺塔才有作用（例：Qwen3.8-27B-exl3）；改了要重新啟動 server。\n"
+                         "gpu：視覺塔常駐顯卡（Qwen3.8 未量化視覺塔約 0.9 GiB）。\n"
+                         "ram：權重留在系統 RAM，每張圖多花約 0.1～0.2 秒串流上顯卡。\n"
+                         "開啟後，llama.cpp 網頁會出現附加圖片的按鈕。"))
+        self.adv["vision"].trace_add("write", lambda *_a: _sync_model())
 
         # 模型載入模式（-lm / -lzm）只在「進階取樣設定」視窗的「載入模式」分頁，
         # 不在此處重複（避免同一組參數兩處輸入）。
@@ -1192,24 +1296,27 @@ class App:
                              if len(RUNTIMES) > 1 else
                              "本資料夾的 llama-server（丟新的一份到子資料夾會自動列出）"),
                   foreground="#666").grid(row=8, column=2, sticky="w", padx=6)
-        Tip(self.cb_runtime, "要用哪一套 llama-server 執行檔。\n"
+        self._engine_reg("runtime", self.cb_runtime, Tip(self.cb_runtime, "要用哪一套 llama-server 執行檔。\n"
                              "自動掃描本資料夾下所有含 llama-server.exe 的子資料夾。\n"
-                             "不同 build 支援的模型架構不同（例：spark2_5 只有官方 runtime 能載）。")
+                             "不同 build 支援的模型架構不同（例：spark2_5 只有官方 runtime 能載）。"))
 
         # 「更多設定」開關已移到整區最上方（見上方 _bar）
         self._apply_more()
+        self._apply_engine_ui()
 
         # 所有數值欄位都吃全形輸入（中文 IME 打 "." 會送成 "。"）
         for _v in (self.ctx, self.ngl, self.ngld, self.rbud, self.port, *self.adv.values()):
             attach_numeric(_v)
 
-        # --- 記憶上次設定：載入 + 任何欄位變動自動存檔（0.8 秒去抖）---
+        # --- 記憶上次設定：載入後只在按「💾 儲存參數」時才寫檔 ---
+        # 欄位異動只標記「有未儲存的變更」，不自動寫 ui-settings.json。
+        # 沒按儲存就離開，下次開啟仍載入上次存的內容（沒存過＝預設）。
         self._loading = True
-        self._save_job = None
+        self._dirty = False
         self._apply_settings(load_settings())
         self._loading = False
         for _v in self._persist_vars():
-            _v.trace_add("write", self._schedule_save)
+            _v.trace_add("write", self._mark_dirty)
 
         # 模板（presets.json）：載入既有模板與模型綁定
         self._presets = load_presets()
@@ -1233,9 +1340,6 @@ class App:
         self.btn_adv.pack(side="left", padx=4)
         self.btn_web = ttk.Button(ctl, text="🌐 開網頁（輕量）", command=self.open_web)
         self.btn_web.pack(side="left", padx=4)
-        self.btn_image = ttk.Button(ctl, text="🎨 Image 模式", command=self.open_image)
-        self.btn_image.pack(side="left", padx=4)
-        Tip(self.btn_image, "獨立啟動生圖控制窗；使用 sd-server，不影響 llama-server。")
         Tip(self.btn_web, "用「獨立小視窗」開啟 llama-server 內建的網頁介面。\n"
                           "做法＝Chromium 的 --app 模式＋獨立 profile＋關擴充功能，\n"
                           "不帶分頁、網址列、擴充功能（實測比日常 Chrome 省約 2 GB）。\n"
@@ -1245,15 +1349,13 @@ class App:
         Tip(self.btn_stop, "終止本 UI 啟動的 server 並釋放埠")
         Tip(self.btn_adv, "開啟參數視窗（temp / top-p / DRY / XTC…與投機解碼共 25 項）。\n"
                           "MoE 的 -ncmoe / -ncffn 不在這個視窗，放在上方「更多設定」裡。")
-        self.btn_dot = ttk.Button(ctl, text="．", width=3, command=self._insert_dot)
-        self.btn_dot.pack(side="left", padx=4)
-        Tip(self.btn_dot, "把「.」補進你上一個點過的欄位（含進階設定視窗裡的欄位）。\n"
-                          "中文輸入法把鍵盤的「.」吃掉時用這顆 —— 不會跳任何視窗。")
-        self.btn_keydbg = ttk.Button(ctl, text="🔍 按鍵偵錯", command=self._toggle_keydbg)
-        self.btn_keydbg.pack(side="left", padx=4)
-        Tip(self.btn_keydbg, "開啟後，你按的每個鍵都會把 keysym / keycode / char 寫進日誌。\n"
-                             "用來查「鍵盤 . ／數字鍵盤 . 打不出來」是 IME 吃掉還是 NumLock 問題。\n"
-                             "再按一次關閉。")
+        self.btn_save = ttk.Button(ctl, text="💾 儲存參數", command=self._manual_save)
+        self.btn_save.pack(side="left", padx=4)
+        Tip(self.btn_save, "把目前畫面上的參數寫進 ui-settings.json（下次開啟自動還原）。\n"
+                           "欄位改動不會自動存檔；沒按這顆就離開，下次仍載入上次存過的內容。\n"
+                           "目前有選模板時，會一併把參數存回該模板。")
+        self.lbl_dirty = ttk.Label(ctl, text="", foreground="#666")
+        self.lbl_dirty.pack(side="left", padx=6)
         self.lbl = ttk.Label(ctl, text="狀態：未執行", foreground="#b00")
         self.lbl.pack(side="left", padx=16)
 
@@ -1295,7 +1397,7 @@ class App:
 
         # 「每次開都走這模板」：開機載入的模型也要套用。
         # （trace 是在 _apply_settings 之後才註冊，所以開機不會自動觸發 → 這裡主動跑一次）
-        # 用 _loading 保護，避免套用過程連帶觸發自動存回。
+        # 用 _loading 保護，避免套用過程被誤標記成「有未儲存的變更」。
         _was_loading = self._loading
         self._loading = True
         try:
@@ -1321,11 +1423,14 @@ class App:
 
         self.external_pid = None  # 非本 UI 啟動、但被接管的 server PID
         self._external_kill_allowed = False
+        # 基準值＝「目前存檔／剛載入」的參數；只有跟它不同才算「有未儲存的變更」，
+        # 避免程式自己還原 runtime、切換折疊區就被當成使用者改過。
+        self._auto = False
+        self._baseline = self._dirty_state()
+        self._dirty = False
+        self._set_dirty_label(False)
         # 所有輸入框都接上「IME 吞按鍵」的補救（char 為空時依 keysym 補回小數點等）
         bind_numeric_tree(root)
-        self._last_num = None      # 最後一個用過的數字欄位（小數點急救鈕靠它，不再跳彈窗）
-        self._keydbg = False       # 按鍵偵錯開關
-        self._watch_focus(self.root)
         self.refresh_status()
         self.root.after(100, self._drain_ui_events)
         self.root.after(1500, self._poll)
@@ -1364,8 +1469,8 @@ class App:
     def _apply_more(self, scroll_to=False):
         """依 self.more 展開／收起「更多設定」。scroll_to=True 才把該區捲進畫面。"""
         _open = bool(self.more.get())
-        self.btn_more.config(text="▾ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數）" if _open
-                             else "▸ 更多設定（KV 型別／思考預算／MoE 放 CPU 層數）")
+        self.btn_more.config(text="▾ 更多設定（KV 型別／思考模式／思考預算／MoE 放 CPU 層數／視覺）" if _open
+                             else "▸ 更多設定（KV 型別／思考預算／MoE 放 CPU 層數／視覺）")
         try:
             if _open:
                 self.advf.grid()
@@ -1663,8 +1768,92 @@ class App:
     def server_exe(self):
         return os.path.join(self.server_dir(), "llama-server.exe")
 
+    def _engine_reg(self, key, widget, tip=None):
+        """登記會隨引擎（GGUF／EXL3）切換的欄位；登記當下就套用目前狀態。"""
+        tip = tip or Tip(widget, "")
+        try:
+            state = str(widget.cget("state")) or "normal"
+        except tk.TclError:
+            state = "normal"
+        self._engine_widgets.append((key, widget, tip, "normal" if state == "disabled" else state))
+        self._apply_engine_ui(only=self._engine_widgets[-1:])
+        return tip
+
+    def _apply_engine_ui(self, only=None):
+        """選到 EXL3：不適用欄位變灰，提示框寫原因；可用欄位附 EXL3 說明。換回 GGUF 恢復原狀。"""
+        try:
+            exl3 = self.is_exl3()
+        except Exception:
+            exl3 = False
+        alive = []
+        for item in (only if only is not None else self._engine_widgets):
+            key, widget, tip, state = item
+            try:
+                if not widget.winfo_exists():
+                    continue
+                na = exl3 and key in llm_exl3.NA_REASONS
+                gguf_na = not exl3 and key in llm_exl3.GGUF_NA
+                widget.configure(state="disabled" if na or gguf_na else state)
+            except tk.TclError:
+                continue
+            tip.extra = ("⛔ EXL3 不使用這一項：" + llm_exl3.NA_REASONS[key]) if na else \
+                        ("⛔ GGUF 不使用這一項：" + llm_exl3.GGUF_NA[key]) if gguf_na else \
+                        (llm_exl3.EXL3_NOTES.get(key, "") if exl3 else "")
+            alive.append(item)
+        if only is None:
+            self._engine_widgets = alive
+        self._engine_is_exl3 = exl3
+
+    def is_exl3(self):
+        """目前選的主模型是不是 EXL3 資料夾。"""
+        return llm_exl3.is_exl3(self.model_path())
+
+    def _exl3_status(self, p):
+        """模型狀態列（EXL3）：相容性、顯存、草稿配對。"""
+        level, why = llm_exl3.assess(p, EXL3_RUNTIME)
+        if level == "error":
+            return {"text": "!! EXL3：" + why, "foreground": "#b00"}
+        sel = self._drafter_map.get(self.drafter.get(), "")
+        _mode = getattr(self, "mode", None)
+        if _mode is not None and _mode.get() != "dspark":
+            df = "Normal（只用主模型）"
+        elif sel == "-":
+            df = "不使用草稿"
+        elif sel:
+            df = ("DF：" + os.path.basename(sel)) if llm_exl3.draft_matches(p, sel) \
+                else "⚠ 這個草稿不是相容的 EXL3 DFlash2，啟動會被擋下"
+        else:
+            d = llm_exl3.guess_draft(p, BASE)
+            df = f"DF：{os.path.basename(d)}（自動配對）" if d else "沒有相容的 EXL3 草稿 → 純主模型解碼"
+        warn = level == "warn" or df.startswith("⚠")
+        vis = ""
+        if llm_exl3.has_vision(p):
+            _v = self.adv["vision"].get() if hasattr(self, "adv") else "off"
+            vis = "｜視覺：" + {"gpu": "GPU", "ram": "RAM"}.get(_v, "關閉")
+        return {"text": f"✅ EXL3｜{why}｜{df}{vis}", "foreground": "#b70" if warn else "#2a7"}
+
+    def _build_exl3_cmd(self, port):
+        mp = self.model_path()
+        sel = self._drafter_map.get(self.drafter.get(), "")
+        cmd, note = llm_exl3.build_cmd(
+            mp, EXL3_RUNTIME, BASE, port=port, ctx=self.ctx.get(), ctk=self.ctk.get(),
+            ctv=self.ctv.get(), think=self.think.get(), effort=self.adv["rea_effort"].get(),
+            speculative=self.mode.get() == "dspark", drafter=sel,
+            sampling={k: v.get() for k, v in self.adv.items()}, draft_max=self.adv["sdnmax"].get(),
+            vision=self.adv["vision"].get())
+        ignored = [k for k in llm_exl3.LLAMA_ONLY if k in self.adv and self.adv[k].get().strip()]
+        if self.rbud.get().strip() not in ("", "-1"):
+            ignored.append("思考預算")
+        if ignored:
+            note += "[EXL3] 這些 llama.cpp 專屬參數不適用，已略過：" + "、".join(ignored) + "\n"
+        self._forced_fa = False
+        self._spec_note = note
+        return cmd
+
     def build_cmd(self):
         port = parse_port(self.port.get())
+        if self.is_exl3():
+            return self._build_exl3_cmd(port)
         p = str(port)
         mp = self.model_path()
         if not mp:
@@ -1739,23 +1928,30 @@ class App:
         mode = self.mode.get()
         self._forced_normal = ""
         self._spec_note = ""
+        self._spec_span = None              # 模式判斷自己送出的投機參數區段（起點, 終點）
+        _spec_start = len(cmd)
         if mode == "dspark":
             mp = self.model_path()
+
+            def _mtp_flags(prefix):
+                """主模型內建 MTP：只送 --spec-type draft-mtp、不指定 -md。
+                （實測 log：creating MTP draft context against the target model；
+                  沒有 nextn_predict_layers 的模型送這個會直接載入失敗，故先驗 GGUF header。）"""
+                nonlocal cmd
+                n = gguf_mtp_layers(mp)
+                if n <= 0:
+                    return False
+                cmd += ["--spec-type", "draft-mtp"]
+                for _r in ADV_SPEC:
+                    _v = self.adv[_r[1]].get().strip()
+                    if _v:
+                        cmd += [_r[0], _v]
+                self._spec_note = f"{prefix}（nextn_predict_layers={n}）\n"
+                return True
+
             sel = self._drafter_map.get(self.drafter.get(), "")
-            if sel == "-":                      # 明確不使用外掛 DF
-                # 模式才是主開關：投機模式 + 不用 DF ＝ 使用「主模型內建 MTP」
-                # （實測：只送 --spec-type draft-mtp、不送 -md，llama-server 會自己
-                #  對照主模型建立 MTP 上下文；沒有內建 MTP 的模型則會載入失敗。）
-                if gguf_mtp_layers(mp) > 0:
-                    cmd += ["--spec-type", "draft-mtp"]
-                    for _r in ADV_SPEC:
-                        _v = self.adv[_r[1]].get().strip()
-                        if _v:
-                            cmd += [_r[0], _v]
-                    self._spec_note = (
-                        f"[投機] 不使用外掛 DF：改用主模型內建 MTP"
-                        f"（nextn_predict_layers={gguf_mtp_layers(mp)}）\n")
-                else:
+            if sel == "-":                      # 明確不使用外掛 DF ＝ 用主模型內建 MTP
+                if not _mtp_flags("[投機] 不使用外掛 DF：改用主模型內建 MTP"):
                     self._spec_note = (
                         "[注意] 投機模式但未選 DF，且主模型沒有內建 MTP（nextn_predict_layers）"
                         "→ 本次以純主模型解碼啟動\n")
@@ -1780,24 +1976,71 @@ class App:
                 elif dr:
                     raise FileNotFoundError(f"找不到指定的草稿模型檔：{dr}")
                 else:
-                    self._spec_note = (
-                        f"[注意] {os.path.basename(mp)} 找不到可搭配的草稿模型；"
-                        f"若這顆模型內建 MTP，請把 DF 選「不使用外掛 DF」\n")
+                    # 自動配對找不到外掛草稿 → 退一步用主模型內建 MTP（有的話）
+                    if not _mtp_flags("[投機] 自動配對找不到外掛草稿：改用主模型內建 MTP"):
+                        self._spec_note = (
+                            f"[注意] {os.path.basename(mp)} 找不到可搭配的草稿模型，"
+                            f"也沒有內建 MTP（nextn_predict_layers）"
+                            f"→ 本次以純主模型解碼啟動\n")
         # 自訂指令：原樣附加到最後（進階視窗「自訂指令」分頁）
-        # 用 shlex 解析成 argv，支援引號與空白路徑；解析失敗則整串當一個參數送出
+        # 投機旗標有兩條規矩：
+        #   1. 主模型沒有內建 MTP、自訂指令指定 draft-mtp、又沒給外掛草稿檔（-md）→
+        #      一定載入失敗（實測 log：context type MTP requested but model doesn't contain
+        #      MTP layers → 直接退出），先把那個旗標移除並在日誌說明。
+        #      ⚠ 但自訂指令只要帶了 -md 指到外掛 MTP 草稿頭（例：mtp-gemma-4-12B-it.gguf），
+        #      主模型不必有 nextn_predict_layers 也能跑（實測 Gemma4 + mtp-gemma 草稿可正常
+        #      載入，接受率 0.26～0.58），這種寫法要照使用者寫的原樣送出、不能攔。
+        #   2. 自訂指令指定了投機旗標 → 以自訂指令為準，UI 不重複送自己那一組
+        #      （否則會出現兩份 --spec-type，值不同時哪個生效看不出來）。
+        self._spec_span = (_spec_start, len(cmd)) if len(cmd) > _spec_start else None
         _extra = self.adv.get("extra_args")
         if _extra is not None:
             _ev = _extra.get().strip()
             if _ev:
-                try:
-                    import shlex as _shlex
-                    _parts = _shlex.split(_ev, posix=False)
-                    # posix=False 會保留引號，去掉成對的引號
-                    _parts = [q[1:-1] if len(q) >= 2 and q[0] == q[-1] and q[0] in ("\"", "'")
-                              else q for q in _parts]
-                    cmd += [x for x in _parts if x]
-                except Exception:
-                    cmd += [_ev]
+                _parts = split_extra_args(_ev)
+                _hits = extra_spec_flags(_parts)
+                if _hits:
+                    _mp = self.model_path()
+                    _has_mtp = gguf_mtp_layers(_mp) > 0
+                    # 自訂指令自己帶了草稿模型？（-md／--model-draft／--spec-draft-model）
+                    _extra_draft = [_v for _i, _nm, _v in _hits if _nm != "--spec-type" and _v]
+                    _wants_mtp = any(_nm == "--spec-type" and "mtp" in (_v or "").lower()
+                                     for _i, _nm, _v in _hits)
+                    _drop = set()
+                    for _i, _nm, _val in _hits:
+                        if _has_mtp or _extra_draft or "mtp" not in (_val or "").lower():
+                            continue
+                        _drop.add(_i)
+                        if "=" not in _parts[_i] and _i + 1 < len(_parts):
+                            _drop.add(_i + 1)   # `--spec-type` 與它的值一起拿掉
+                    if _drop:
+                        _parts = [x for _k, x in enumerate(_parts) if _k not in _drop]
+                        self._spec_note += (
+                            "[注意] 自訂指令的 --spec-type draft-mtp 已移除："
+                            f"{os.path.basename(_mp)} 沒有內建 MTP（nextn_predict_layers），"
+                            "又沒帶草稿檔（-md）→ 留著 llama-server 會直接載入失敗\n")
+                    elif _wants_mtp and _extra_draft and not _has_mtp:
+                        _d = _extra_draft[0]
+                        self._spec_note += (
+                            "[投機] 自訂指令指定了外掛 MTP 草稿："
+                            f"{os.path.basename(_d)}（{os.path.basename(_mp)} 本身沒有內建 MTP，"
+                            "由這顆草稿頭提供）→ 照你的指令送出\n")
+                        if _d.lower().endswith(".gguf") and not (
+                                os.path.isfile(_d)
+                                or os.path.isfile(os.path.join(LLM_MODELS, os.path.basename(_d)))):
+                            self._spec_note += f"[注意] 找不到這個草稿檔：{_d}\n"
+                    _hits = extra_spec_flags(_parts)
+                if _hits and self._spec_span:
+                    _a, _b = self._spec_span
+                    del cmd[_a:_b]
+                    self._spec_span = None
+                    # 模式判斷剛寫下的 [投機] 提示已不成立（那段參數被撤掉了），別留誤導訊息
+                    _keep = [ln for ln in self._spec_note.splitlines()
+                             if ln.strip() and not ln.startswith("[投機]")]
+                    _keep.append("[投機] 自訂指令指定了投機旗標 → 本輪以自訂指令為準，"
+                                 "UI 的 DF／內建 MTP 判斷與草稿長度參數不會另外補上")
+                    self._spec_note = "\n".join(_keep) + "\n"
+                cmd += _parts
         return cmd
 
     def _light_profile_dir(self):
@@ -1821,13 +2064,6 @@ class App:
             if os.path.exists(c):
                 return c
         return ""
-
-    def open_image(self):
-        """Open an independent image controller; llama-server remains untouched."""
-        try:
-            subprocess.Popen([sys.executable, os.path.join(BASE, "image-ui.py")], cwd=BASE)
-        except OSError as exc:
-            messagebox.showerror("Image 模式", str(exc))
 
     def open_web(self):
         """開 llama-server 網頁介面。
@@ -1882,6 +2118,9 @@ class App:
         except ValueError as e:
             messagebox.showerror("設定錯誤", str(e))
             return
+        if self.is_exl3():
+            self._start_exl3(port)
+            return
         # 每次啟動都強制執行重複檢查（埠佔用 / 殘留程序）
         if not self._preflight(port):
             return
@@ -1914,7 +2153,14 @@ class App:
                 self._lora_applied = None
                 cmd = self.build_cmd()
                 self._log("[LoRA] 已清空 LoRA 設定，改用重新建好的指令啟動\n")
+        try:
+            launch_env, gpu_note = prepare_llama_launch(cmd, BASE)
+        except Exception as e:
+            self._log(f"[GPU 預檢] {e}\n")
+            messagebox.showerror("GPU 啟動檢查", str(e))
+            return
         self._log("$ " + " ".join(cmd) + "\n")
+        self._log(gpu_note)
         if getattr(self, "_forced_fa", False):
             self._log("[注意] V cache 量化需要 Flash-Attn，已自動補上 -fa on\n")
         # KV 去哪裡＝講清楚（只提示，不改變行為）：ctx 大又沒勾 -nkvo 時，
@@ -1933,7 +2179,7 @@ class App:
         if getattr(self, "_spec_note", ""):
             self._log(self._spec_note)
         try:
-            proc = subprocess.Popen(cmd, cwd=self.server_dir(),
+            proc = subprocess.Popen(cmd, cwd=self.server_dir(), env=launch_env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
         except Exception as e:
@@ -1953,6 +2199,55 @@ class App:
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.lbl.config(text="狀態：啟動中…", foreground="#b80")
+
+    def _start_exl3(self, port):
+        """EXL3：獨立 runtime 的 OpenAI 相容 server。只會停掉這套 runtime 自己的殘留程序。"""
+        global proc
+        busy = pids_listening_on(port)
+        if busy:
+            ours = llm_exl3.find_servers(EXL3_RUNTIME)
+            mine = sorted(p for p in busy if p in ours)
+            if mine and len(mine) == len(busy):
+                if not messagebox.askyesno(
+                        "EXL3 殘留程序",
+                        f"埠 {port} 已有上次留下的 EXL3 server（PID {', '.join(map(str, mine))}）。\n"
+                        "要先停止它再啟動嗎？"):
+                    return
+                for p in mine:
+                    kill_pid(p, self._log)
+                if not wait_port_free(port, log=self._log):
+                    messagebox.showerror("埠仍被佔用", f"埠 {port} 仍未釋放，已取消啟動。")
+                    return
+            else:
+                messagebox.showerror(
+                    "埠已被佔用",
+                    f"埠 {port} 已有其他服務（PID {', '.join(map(str, sorted(busy)))}）。\n\n"
+                    "EXL3 不會停止其他引擎；請先停止它，或把「埠」改成沒在用的號碼（例：18440）。")
+                return
+        try:
+            cmd = self.build_cmd()
+        except Exception as e:
+            messagebox.showerror("EXL3 設定錯誤", str(e))
+            return
+        self._log("$ " + subprocess.list2cmdline(cmd) + "\n")
+        self._log(self._spec_note)
+        try:
+            proc = subprocess.Popen(cmd, cwd=EXL3_RUNTIME, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception as e:
+            messagebox.showerror("啟動失敗", str(e))
+            return
+        threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
+        _SPAWNED.add(proc)
+        self.active_port = port
+        self.external_pid = None
+        self._external_kill_allowed = False
+        self._active_lora_path = ""
+        self._lora_restart_note = None
+        self._lora_applied = None
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.lbl.config(text="狀態：EXL3 載入中…", foreground="#b80")
 
     def stop(self):
         global proc
@@ -2038,7 +2333,17 @@ class App:
                 return
         if port_open(p):
             info = http_get("/props", timeout=2, port=p)
-            if isinstance(info, dict) and not info.get("_err"):
+            if isinstance(info, dict) and info.get("backend") == "exllamav3":
+                model = (info.get("alias") or "")[:40]
+                nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
+                st = info.get("status")
+                if st == "ok":
+                    self.lbl.config(text=f"狀態：RUNNING（EXL3）  port={p}  ctx={nctx}  {model}", foreground="#080")
+                elif st == "error":
+                    self.lbl.config(text=f"狀態：EXL3 載入失敗：{str(info.get('error'))[:80]}", foreground="#b00")
+                else:
+                    self.lbl.config(text=f"狀態：EXL3 載入模型中…  port={p}  {model}", foreground="#b80")
+            elif isinstance(info, dict) and not info.get("_err"):
                 model = os.path.basename(info.get("model_path", "") or "")[:40]
                 nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
                 self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
@@ -2124,98 +2429,6 @@ class App:
             return f"找不到這個 LoRA 檔：{lora}"
         return ""
 
-    def _insert_dot(self):
-        """小數點急救鈕：把「.」補進最後一個用過的數字欄位（含進階設定視窗裡的欄位）。
-        舊版用 root.focus_get()，焦點在另一個 Toplevel（進階設定）時會拿到 None →
-        跳模態視窗並搶走焦點，等於讓進階設定不能用。改成記憶最後欄位 + 不跳任何視窗。"""
-        w = getattr(self, "_last_num", None)
-        if w is not None:
-            try:
-                if w.winfo_exists() and str(w.winfo_class()) in ("TEntry", "Entry", "TCombobox", "Text"):
-                    _tl = w.winfo_toplevel()
-                    try:
-                        _tl.lift()
-                    except Exception:
-                        pass
-                    w.focus_set()
-                    w.insert("insert", ".")
-                    return
-            except Exception:
-                pass
-        # 沒有可插入的欄位：只寫日誌（不跳視窗、不搶焦點、不擋住進階設定）
-        self._log("[小數點鈕] 找不到可插入的欄位：請先用滑鼠點一下要輸入的欄位，再按「．」\n")
-        try:
-            self.root.bell()
-        except Exception:
-            pass
-
-    # ---------- 記住最後用過的欄位 / 按鍵偵錯 ----------
-    def _remember_focus(self, w):
-        try:
-            if isinstance(w, (ttk.Entry, ttk.Combobox, tk.Entry, tk.Text)):
-                self._last_num = w
-        except Exception:
-            pass
-
-    def _watch_focus(self, widget):
-        """遞迴把輸入框接上 <FocusIn>，記住最後用過的是哪一個。"""
-        for ch in widget.winfo_children():
-            try:
-                if isinstance(ch, (ttk.Entry, ttk.Combobox, tk.Entry, tk.Text)):
-                    ch.bind("<FocusIn>", lambda e: self._remember_focus(e.widget), add="+")
-            except Exception:
-                pass
-            self._watch_focus(ch)
-
-    def _toggle_keydbg(self):
-        self._keydbg = not getattr(self, "_keydbg", False)
-        try:
-            self.btn_keydbg.config(text="🔍 按鍵偵錯：開" if self._keydbg else "🔍 按鍵偵錯")
-        except Exception:
-            pass
-        if self._keydbg:
-            self._log("[按鍵偵錯] 已開啟：請用滑鼠點一下要測的欄位，再按那個按不出來的鍵"
-                      "（例如數字鍵盤的 .）\n"
-                      "            每顆鍵都會記一行 keysym / keycode / char，"
-                      "按完把這幾行貼給我就能對症下藥\n")
-            self._enable_keydbg(self.root)
-        else:
-            self._log("[按鍵偵錯] 已關閉\n")
-
-    def _enable_keydbg(self, widget):
-        """遞迴把 <KeyPress> 接上偵錯記錄（每顆控件只綁一次，避免重複疊加噴多行）。"""
-        try:
-            if getattr(widget, "_keydbg_bound", False):
-                return
-            widget._keydbg_bound = True
-            widget.bind("<KeyPress>", self._keydbg_log, add="+")
-            for ch in widget.winfo_children():
-                self._enable_keydbg(ch)
-        except Exception:
-            pass
-
-    def _keydbg_log(self, e):
-        if not getattr(self, "_keydbg", False):
-            return None
-        try:
-            _note = ""
-            _kc = getattr(e, "keycode", None)
-            if _kc == 46 and e.char:
-                _note = "  ← NumLock 關著時數字鍵盤 . 會送 Delete+char（已自動改插該字元）"
-            elif _kc == 46:
-                _note = "  ← NumLock 關著時數字鍵盤 . 會送 Delete"
-            elif _kc == 229:
-                _note = "  ← 輸入法(IME)把整顆鍵吃掉，Tk 收不到字元"
-            elif not e.char:
-                _note = {110: "  ← 數字鍵盤 . (VK_DECIMAL)",
-                         190: "  ← 主鍵盤 . (VK_OEM_PERIOD)",
-                         96: "  ← 數字鍵盤 0"}.get(_kc, "")
-            self._log(f"[按鍵] keysym={e.keysym!r} keycode={e.keycode!r} "
-                      f"char={e.char!r} state={e.state!r}"
-                      f" 控件={e.widget.winfo_class()}{_note}\n")
-        except Exception:
-            pass
-        return None
 
     # ---------- 設定記憶 / 儲存 ----------
     def _persist_vars(self):
@@ -2273,6 +2486,8 @@ class App:
             adv = {}
         for k, var in self.adv.items():
             var.set(adv[k] if isinstance(adv.get(k), str) else "")
+        if not self.adv["vision"].get():
+            self.adv["vision"].set("off")
 
     def _clear_lora_state(self):
         """清除模板／模型專屬 LoRA，以及執行中套用狀態快取。"""
@@ -2596,32 +2811,58 @@ class App:
             self.more.set(d["more"])
             self._apply_more()
 
-    def _schedule_save(self, *_a):
-        if getattr(self, "_loading", False):
+    # ---------- 輸入輔助 ----------
+    # 真正處理「中文 IME 吃掉小數點」的是檔案上方的 numeric_key_handler + attach_numeric
+    # （char 為空時依 keysym／keycode 補回 . , - +，全形轉半形），不依賴任何按鈕或偵錯模式。
+
+    # ---------- 設定記憶 / 儲存 ----------
+    def _dirty_state(self):
+        """用來比對「有沒改過」的狀態；折疊狀態（more）不算參數，不列入。"""
+        d = self._collect_settings()
+        d.pop("more", None)
+        return d
+
+    def _mark_dirty(self, *_a):
+        """欄位異動 → 與基準值比對；真的不同才標記（不寫檔，要按「💾 儲存參數」）。"""
+        if getattr(self, "_loading", False) or getattr(self, "_tpl_busy", False) \
+                or getattr(self, "_rt_busy", False) or getattr(self, "_auto", False):
             return
-        if getattr(self, "_save_job", None):
-            try:
-                self.root.after_cancel(self._save_job)
-            except Exception:
-                pass
-        self._save_job = self.root.after(800, self.save_now)
+        cur = self._dirty_state()
+        dirty = cur != getattr(self, "_baseline", None)
+        if dirty != getattr(self, "_dirty", False):
+            self._dirty = dirty
+            self._set_dirty_label(dirty)
+
+    def _set_dirty_label(self, dirty):
+        lbl = getattr(self, "lbl_dirty", None)
+        if lbl is None:
+            return
+        try:
+            if dirty:
+                lbl.config(text="● 有未儲存的變更", foreground="#b60")
+            else:
+                lbl.config(text="✔ 與已儲存內容相同", foreground="#666")
+        except Exception:
+            pass
 
     def save_now(self):
-        self._save_job = None
+        """實際寫檔：ui-settings.json（含目前參數）；有選模板時一併存回該模板。"""
         try:
             cur = self._collect_settings()
             ok = save_settings(cur)
-            # 有選模板時 → 把目前參數「自動存回」該模板（與現有的自動記憶行為一致）
             if self._tpl_current_name() and not getattr(self, "_tpl_busy", False):
                 if self._tpl_store_current(quiet=True):
-                    self._tpl_status(f"已自動存回「{self._tpl_current_name()}」")
+                    self._tpl_status(f"已存回「{self._tpl_current_name()}」")
             prev = getattr(self, "_last_saved", None)
             self._last_saved = cur
             names = {"model_path": "主模型", "drafter_path": "草稿模型(DF)", "runtime": "執行檔"}
             changed = [names[k] for k in names if prev is not None and prev.get(k) != cur.get(k)]
             if ok:
-                self._log("[設定] 已自動記住：" + ("、".join(changed) if changed
-                                                  else "目前選擇") + "（下次開啟自動還原）\n")
+                self._dirty = False
+                self._baseline = self._dirty_state()
+                self._set_dirty_label(False)
+                self._log("[設定] 已儲存 ui-settings.json：" + ("、".join(changed) if changed
+                                                          else "目前參數") + "（下次開啟自動還原）\n")
             else:
                 self._log("[設定] ⚠ 存檔失敗（無法寫入 ui-settings.json）\n")
             return ok
@@ -2630,11 +2871,10 @@ class App:
             return False
 
     def _manual_save(self):
-        ok = self.save_now()
-        if ok:
-            messagebox.showinfo("設定已儲存", f"已寫入：\n{SETTINGS_FILE}\n\n下次開啟 UI 會自動載入。")
-        else:
+        """「💾 儲存參數」按鈕：按下才寫檔（欄位改動不會自動存）。"""
+        if not self.save_now():
             messagebox.showerror("儲存失敗", f"無法寫入：\n{SETTINGS_FILE}")
+
 
     # ---------- 重複檢查 ----------
     def _startup_scan(self):
@@ -2647,9 +2887,9 @@ class App:
         servers = find_llama_servers()
         ours = RUNTIME_DIRS
         if os.path.exists(SETTINGS_FILE):
-            self._log(f"[設定] 已載入 {os.path.basename(SETTINGS_FILE)}（欄位異動會自動存檔）\n")
+            self._log(f"[設定] 已載入 {os.path.basename(SETTINGS_FILE)}（欄位改動不會自動存，按「💾 儲存參數」才寫入）\n")
         else:
-            self._log(f"[設定] 尚無 {os.path.basename(SETTINGS_FILE)}，異動時會自動建立\n")
+            self._log(f"[設定] 尚無 {os.path.basename(SETTINGS_FILE)}，目前為預設值（按「💾 儲存參數」會建立）\n")
         if busy:
             self._log(f"[開機掃描] 埠 {p} 已被佔用：PID {sorted(busy)}\n")
             self._log("            按「▶ 啟動」時會詢問【接管／終止並重啟／取消】\n")
@@ -2745,12 +2985,20 @@ class App:
         return True
 
     def on_close(self):
-        """關閉視窗＝自動關掉 server（防孤兒），並把最後的設定存檔。"""
+        """關閉視窗＝自動關掉 server（防孤兒）。設定不自動存檔；有未存的變更會先問一次。"""
         global proc
-        try:
-            self.save_now()
-        except Exception:
-            pass
+        if getattr(self, "_dirty", False):
+            try:
+                if messagebox.askyesno(
+                        "尚未儲存的變更",
+                        "參數有變更，但還沒按「💾 儲存參數」。\n要現在寫入 ui-settings.json 嗎？\n\n"
+                        "【是】存檔後關閉\n"
+                        "【否】不儲存，下次開啟回到上次儲存的內容（沒存過＝預設）"):
+                    self.save_now()
+                else:
+                    self._log("[設定] 未儲存即關閉，ui-settings.json 維持上次的內容\n")
+            except Exception:
+                pass
         if proc and proc.poll() is None:
             self._log("[關閉] 自動終止本 UI 啟動的 server PID %d\n" % proc.pid)
             try:
@@ -2817,8 +3065,9 @@ class App:
             for i, r in enumerate(rows):
                 _flag, _key, _lab, _hint = r[0], r[1], r[2], r[3]
                 ttk.Label(tab, text=_lab).grid(row=r0 + i, column=0, sticky="w", padx=6, pady=3)
-                ttk.Entry(tab, textvariable=self.adv[_key], width=16).grid(
-                    row=r0 + i, column=1, sticky="w", padx=6)
+                _ent = ttk.Entry(tab, textvariable=self.adv[_key], width=16)
+                _ent.grid(row=r0 + i, column=1, sticky="w", padx=6)
+                self._engine_reg(_key, _ent)
                 ttk.Label(tab, text=f"{_flag}    {_hint}", foreground="#666",
                           wraplength=520, justify="left").grid(
                     row=r0 + i, column=2, sticky="w", padx=6)
@@ -2875,21 +3124,29 @@ class App:
                           "啟動後自動以 API POST /lora-adapters 套用。",
                   foreground="#666", justify="left", wraplength=520).grid(
             row=2, column=2, sticky="w", padx=6)
-        Tip(_e_ls, "LoRA 強度 scale（不需重啟即可調整）。\n"
+        self._engine_reg("lora", _b_pick)
+        self._engine_reg("lora", _b_clear)
+        self._engine_reg("lora_scale", _e_ls, Tip(_e_ls, "LoRA 強度 scale（不需重啟即可調整）。\n"
                    "留空 = 用 llama.cpp 預設 1.0。\n"
                    "官方建議：0＝原始模型（對照組）、1＝精確投影、2＝連頑固題材也翻、3+＝開始崩壞。\n"
                    "★ 本 UI 用啟動後 POST /lora-adapters 套用，"
-                   "因為 --lora-scaled 的 FNAME:SCALE 在 Windows 會與『D:』衝突而報錯。")
-        Tip(_e_lora, "旗標：--lora FNAME\n"
+                   "因為 --lora-scaled 的 FNAME:SCALE 在 Windows 會與『D:』衝突而報錯。"))
+        self._engine_reg("lora", _e_lora, Tip(_e_lora, "旗標：--lora FNAME\n"
                      "LoRA 適配檔的完整路徑（.gguf）。\n"
                      "要用不同強度時 llama.cpp 另有 --lora-scaled FNAME:SCALE（本 UI 暫不支援）。\n"
-                     "留空＝不送這個參數。")
+                     "留空＝不送這個參數。"))
 
         t8 = ttk.Frame(nb); nb.add(t8, text="自訂指令")
         ttk.Label(t8, text=("直接附加到 llama-server 啟動指令的「最後面」。\n"
                             "留空＝不附加。格式與你在命令列打的一樣，會用空白拆成多個參數；\n"
                             "路徑含空白時用雙引號包起來，例如：\n"
-                            '    --lora-scaled "D:\\my loras\\x.gguf:1.5" --no-mmap'),
+                            '    --lora-scaled "D:\\my loras\\x.gguf:1.5" --no-mmap\n'
+                            "投機旗標（--spec-type／-md／--model-draft）寫在這裡＝以你寫的為準，"
+                            "UI 不會再重複送自己那組判斷；\n"
+                            "例外：主模型沒有內建 MTP、又沒帶草稿檔（-md）卻寫 --spec-type draft-mtp，"
+                            "這個組合一定載入失敗，啟動前會移除並在日誌說明；\n"
+                            "有帶 -md <外掛 MTP 草稿>（如 mtp-gemma-4-12B-it.gguf）就不動它——"
+                            "外掛 MTP 頭不需要主模型內建 MTP。"),
                   foreground="#666", wraplength=620, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 4))
         ttk.Label(t8, text="自訂參數").grid(row=1, column=0, sticky="w", padx=6, pady=(3, 3))
@@ -2899,17 +3156,19 @@ class App:
         _bx.grid(row=1, column=2, sticky="w", padx=6)
         ttk.Button(_bx, text="✕", width=3,
                    command=lambda: self.adv["extra_args"].set("")).pack(side="left")
-        Tip(_e_extra, "這裡填的內容會『原樣』接在整條指令最後。\n"
+        self._engine_reg("extra_args", _e_extra, Tip(_e_extra, "這裡填的內容會『原樣』接在整條指令最後。\n"
                       "會自動用空白拆成多個參數（跟命令列一樣）；含空白的路徑請用雙引號包住。\n"
                       "★ 這是最後手段：UI 已有的欄位優先，這裡只補 UI 沒有的旗標。\n"
                       "★ 打錯的旗標會讓 llama-server 啟動失敗（錯誤會顯示在日誌）。\n"
-                      "可用主視窗的「預覽完整指令」先確認送出內容。")
+                      "可用主視窗的「預覽完整指令」先確認送出內容。"))
 
         t6 = ttk.Frame(nb); nb.add(t6, text="載入模式")
         fill(t6, ADV_LOAD,
              "控制模型檔怎麼載入記憶體。留空 = 不送出，用 llama.cpp 內建預設（-lm auto / -lzm auto）。\n"
              "★ -lm mmap 搭配 -lzm on：大型 tensor 不常駐，可明顯降低 RAM 佔用（適合大模型）。\n"
              "  -lzm on 需要 mmap，所以 -lm 要選 mmap 或 auto。")
+
+        self._apply_engine_ui()
 
         bf = ttk.Frame(w)
         bf.pack(fill="x", padx=10, pady=(4, 2))
@@ -2927,15 +3186,9 @@ class App:
         # 第二列：冷門功能，避免窄視窗時把主要按鈕擠掉
         bf2 = ttk.Frame(w)
         bf2.pack(fill="x", padx=10, pady=(0, 8))
-        ttk.Label(bf2, text="（欄位一改就會自動存檔）", foreground="#666").pack(side="left", padx=4)
-        ttk.Button(bf2, text="．插入小數點", command=self._insert_dot).pack(side="left", padx=4)
-        _bd = ttk.Button(bf2, text="🔍 按鍵偵錯", command=self._toggle_keydbg)
-        _bd.pack(side="left", padx=4)
-        Tip(_bd, "開啟後，你按的每個鍵都會把 keysym / keycode / char 寫進主視窗日誌。")
+        ttk.Label(bf2, text="（欄位改動不會自動存檔，按「💾 儲存參數」才寫入）", foreground="#666").pack(side="left", padx=4)
         ttk.Label(bf2, text="ESC 可關閉本視窗", foreground="#666").pack(side="right", padx=6)
         bind_numeric_tree(w)
-        self._watch_focus(w)      # 進階視窗裡的欄位也納入「最後用過的欄位」
-        self._enable_keydbg(w)    # 偵錯開著時立刻生效
 
         # 依「目前分頁」的實際內容調整高度：ttk.Notebook 預設永遠取「最高分頁」的高度，
         # 所以矮分頁底下會固定空一大塊（實測最多 128px）。這裡直接改 Notebook 高度來貼合。
@@ -2968,7 +3221,7 @@ class App:
                 "「投機解碼」、MoE 放 CPU 層數、載入模式、LoRA、自訂指令）清成空白，\n"
                 "啟動時改用 llama.cpp 內建預設：\n"
                 "    temp 0.80 / top-p 0.95 / top-k 40 / min-p 0.05 / n-max 3 …\n\n"
-                "（欄位一改就自動存檔，所以清空後會立刻覆蓋你目前的設定）\n\n要繼續嗎？"):
+                "（清空只改畫面，按「💾 儲存參數」才會寫進設定檔）\n\n要繼續嗎？"):
             return
         n = 0
         for r in _all:

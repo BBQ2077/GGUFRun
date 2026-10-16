@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Independent configurable stable-diffusion.cpp controller."""
 import functools
+import hashlib
 import json
 import os
 import pathlib
@@ -20,6 +21,80 @@ from urllib.parse import urlencode
 from image_save_service import ImageSaveService
 
 BASE = pathlib.Path(__file__).resolve().parent
+
+
+ROCM_10_RUNTIME = 'sd-master-1d0a58a-bin-win-rocm-10.1.0-x64'
+# 專案自備的 ROCm SDK 套件（packages/、packages-10.1.0/、rocm-10.1-manifest.json），相對專案根目錄
+ROCM_PACKAGES = pathlib.PurePosixPath('RUNTIMES/rocm-sdk-packages')
+
+
+def local_rocm_environment(executable):
+    """Select one project SDK for the child process, leaving the parent unchanged."""
+    env = os.environ.copy()
+    runtime = pathlib.Path(executable).resolve().parent
+    repair = BASE / ROCM_PACKAGES
+    if runtime.name.casefold() == ROCM_10_RUNTIME:
+        paths = (runtime, repair / 'packages-10.1.0' / '_rocm_sdk_libraries' / 'bin')
+    elif runtime.name.casefold() == 'stable-diffusion-rocm-master-929-3f8527a':
+        paths = (runtime, repair / 'packages' / '_rocm_sdk_core' / 'bin',
+                 repair / 'packages' / '_rocm_sdk_libraries' / 'bin')
+    else:
+        return env
+    roots = tuple(str(repair / folder).replace(chr(92), '/').casefold().rstrip('/') + '/'
+                  for folder in ('packages', 'packages-10.1.0'))
+
+    def project_sdk_path(value):
+        return value.strip('"').replace(chr(92), '/').casefold().startswith(roots)
+
+    entries = [entry for entry in env.get('PATH', '').split(os.pathsep)
+               if entry and not project_sdk_path(entry)]
+    preferred = [str(path) for path in paths]
+    entries = [entry for entry in entries if entry.casefold() not in {p.casefold() for p in preferred}]
+    env['PATH'] = os.pathsep.join(preferred + entries)
+    for key in ('ROCM_PATH', 'HIP_PATH', 'HIP_DEVICE_LIB_PATH', 'ROCBLAS_TENSILE_LIBPATH',
+                'HIPBLASLT_TENSILE_LIBPATH', 'ROCM_KPACK_PATH'):
+        if key in env and project_sdk_path(env[key]):
+            del env[key]
+    return env
+
+def local_rocm_launch_note(executable):
+    """Validate the app-local HIP bundle used by the installed ROCm runtime."""
+    runtime = pathlib.Path(executable).resolve().parent
+    if runtime.name.casefold() == ROCM_10_RUNTIME:
+        repair = BASE / ROCM_PACKAGES
+        manifest = json.loads((repair / 'rocm-10.1-manifest.json').read_text(encoding='utf-8'))
+        if manifest.get('sdk_version') != '10.1.0':
+            raise RuntimeError('ROCm SDK 版本不符 10.1.0')
+        for relative, expected in manifest['files'].items():
+            path = (BASE / relative).resolve()
+            if not path.is_relative_to(BASE.resolve()) or not path.is_file():
+                raise RuntimeError(f'ROCm 10.1 元件未齊備：{relative}')
+            with path.open('rb') as handle:
+                actual = hashlib.file_digest(handle, 'sha256').hexdigest()
+            if actual != expected:
+                raise RuntimeError(f'ROCm 10.1 元件 SHA256 不符：{relative}')
+        libraries = repair / 'packages-10.1.0' / '_rocm_sdk_libraries' / 'bin'
+        return (f'[GGUFRun] ROCm SDK 10.1.0 / gfx1201；SHA256 驗證完成' + chr(10)
+                + f'[GGUFRun] HIP（app-local）：{runtime / "amdhip64_7.dll"}' + chr(10)
+                + f'[GGUFRun] BLAS：{libraries}' + chr(10))
+    if runtime.name.casefold() != 'stable-diffusion-rocm-master-929-3f8527a':
+        return ''
+    core = BASE / ROCM_PACKAGES / 'packages' / '_rocm_sdk_core' / 'bin'
+    names = ('amdhip64_7.dll', 'rocm_kpack.dll', 'amd_comgr.dll',
+             'hiprtc0714.dll', 'hiprtc-builtins0714.dll')
+    for name in names:
+        source, target = core / name, runtime / name
+        if not source.is_file() or not target.is_file():
+            raise RuntimeError(f'專案 ROCm 7.14 元件未齊備：{name}；請檢查 runtime 與本機套件。')
+        with source.open('rb') as f:
+            expected = hashlib.file_digest(f, 'sha256').digest()
+        with target.open('rb') as f:
+            actual = hashlib.file_digest(f, 'sha256').digest()
+        if actual != expected:
+            raise RuntimeError(f'專案 ROCm 元件版本不同：{target}；請使用同版套件。')
+    return f'[GGUFRun] HIP runtime（app-local，ROCm 7.14）：{runtime / names[0]}' + chr(10)
+
+
 SETTINGS = BASE / 'image-settings.json'
 DEFAULT_RUNTIME = 'stable-diffusion-cuda12-master-929-3f8527a/'
 FILES = {
@@ -705,11 +780,10 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
         raise ValueError('--fa（全流程 Flash Attention）必須為開啟或關閉')
     if fa:
         cmd.append(FA_FLAG)
-    # Optional Viggle adapter is never applied at startup; the native API
-    # supplies it per task.  Keep the original safetensors untouched.
-    viggle = base / 'IMAGE-MODELS' / 'loras' / 'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors'
-    if viggle.is_file():
-        cmd.extend(['--lora-model-dir', str(viggle.parent)])
+    # Advertise all project adapters; selection and strength are supplied per task.
+    lora_dir = base / 'IMAGE-MODELS' / 'loras'
+    if lora_dir.is_dir():
+        cmd.extend(['--lora-model-dir', str(lora_dir)])
     if not valid_conditioning_cache_size(conditioning_cache_size):
         raise ValueError('Conditioning cache 請輸入 default 或 0～2147483647 的整數')
     if conditioning_cache_size != 'default':
@@ -733,7 +807,8 @@ def build_server_cmd(base, port, offload=True, runtime=DEFAULT_RUNTIME, models=N
             if not valid_vae_relative_tile_size(tile_size):
                 raise ValueError('VAE 分塊相對大小請留空，或填 0.01～1.0（如 0.5），'
                                  '或明確尺寸（如 512x768）')
-            cmd.extend(('--vae-relative-tile-size', tile_size))
+            tile_flag = '--vae-tile-size' if 'x' in tile_size.lower() else '--vae-relative-tile-size'
+            cmd.extend((tile_flag, tile_size))
     # Reference-image preprocessing (img2img / qwen_edit): a key-value list.  Empty＝不送，
     # 後端用預設；填了不是 key=value 的東西會擋下啟動，因為那一定不是可用的 argv 值。
     ref_image = str(ref_image_args or '').strip()
@@ -839,7 +914,7 @@ def supports_conditioning_cache(executable):
     """Avoid passing an unsupported flag to user-selected sd-server runtimes."""
     try:
         result = subprocess.run([executable, '--help'], capture_output=True, text=True,
-                                errors='replace', timeout=5)
+                                errors='replace', timeout=5, env=local_rocm_environment(executable))
         return result.returncode == 0 and '--conditioning-cache-size' in (result.stdout + result.stderr)
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -1049,10 +1124,9 @@ class ImageApp:
         self._tpl_busy = False
         self._tpl_note = ''
         self._tpl_model_key = ''
-        # Auto-save-back state: hand-tuning a value while a template is selected writes the
-        # change into that template, exactly like gguf-ui.py's save_now -> _tpl_store_current.
-        self._tpl_dirty = False
-        self._tpl_save_job = None
+        # Auto-save-back state: 欄位改動只標記「有未儲存的變更」；按「💾 儲存參數」
+        # 才會寫 image-settings.json（有選模板時一併存回該模板）。
+        self._dirty = False
         # The upscaler directory is pre-filled with the conventional folder only when it exists,
         # so a fresh install never refuses to start over a directory that was never created;
         # a hand-written --hires-upscalers-dir in 「額外指令」 wins over that default, and a flag
@@ -1234,7 +1308,7 @@ class ImageApp:
         hint(_tr2, '模板只存「怎麼跑」：offload／取樣加速／threshold／warmup／VAE 分塊／'
                    'Flash Attention／conditioning cache。不含埠、模型路徑本身。\n'
                    '切到「綁定」的模型會自動套用該模板；沒有綁定的模型套用「預設模板」。\n'
-                   '手動改上面任何一個模板欄位，會自動存回目前選的模板（和 LLM 模式一致）。'
+                   '手動改上面任何一個模板欄位不會自動寫檔；按「💾 儲存參數」才會存回目前選的模板。'
                    '\n\n另存＝把目前畫面參數存成新模板；設為預設＝沒綁定的模型都套用它。').pack(side='left', padx=(4, 0))
 
         options = ttk.Frame(frame)
@@ -1242,7 +1316,7 @@ class ImageApp:
         ttk.Label(options, text='本機埠：').pack(side='left')
         self.port_entry = ttk.Entry(options, textvariable=self.port, width=9)
         self.port_entry.pack(side='left', padx=(0, 18))
-        ttk.Checkbutton(options, text='Offload 到系統 RAM（8 GB 顯卡建議）', variable=self.offload).pack(side='left')
+        ttk.Checkbutton(options, text='Offload 到系統 RAM（降低常駐顯存）', variable=self.offload).pack(side='left')
         # VAE 在 CPU 上執行：原本就攤在主表單（省顯存的主力開關之一），
         # 先前被收進預設收合的「進階」區而難以找到 —— 搬回主表單。
         self.vae_cpu_box = ttk.Checkbutton(options, text='VAE 在 CPU 上執行（--backend vae=cpu）',
@@ -1333,15 +1407,15 @@ class ImageApp:
         self.vae_tiling_box = ttk.Checkbutton(vae_row, text='分塊處理（預設開啟）',
                                               variable=self.vae_tiling)
         self.vae_tiling_box.pack(side='left', padx=(0, 10))
-        ttk.Label(vae_row, text='分塊相對大小：').pack(side='left')
+        ttk.Label(vae_row, text='分塊大小／比例：').pack(side='left')
         self.vae_tile_size_entry = ttk.Entry(vae_row, textvariable=self.vae_relative_tile_size, width=7)
         self.vae_tile_size_entry.pack(side='left', padx=(0, 8))
         self.vae_tile_hint = ttk.Label(vae_row, text='', wraplength=430)
         self.vae_tile_hint.pack(side='left')
         hint(vae_row, '「分塊處理」送 --vae-tiling（VAE 仍在顯卡上，但切成小塊編碼，尖峰較低；預設已開啟）。\n'
                       '解碼階段爆顯存時先試分塊，仍不夠再開上方的「VAE 在 CPU 上執行」；也可搭配「保留顯存」。\n\n'
-                      '「分塊相對大小」送 --vae-relative-tile-size：留空＝後端預設 256x256（實測最慢）；\n'
-                      '填 1 以下的比例（0.5＝每塊約圖邊長一半，1024x1536 只需約 6 塊）可大幅加快解碼，且逐像素無損；\n'
+                      '「分塊大小／比例」：比例送 --vae-relative-tile-size，尺寸送 --vae-tile-size；留空沿用後端預設。\n'
+                      '填 1 以下的比例（0.5＝每塊約圖邊長一半，1024x1536 只需約 6 塊）可減少分塊數量與重疊計算；\n'
                       '也可填明確尺寸如 512x768（比比例更好預測，因為比例會隨解析度變動）。需搭配「分塊處理」。\n'
                       '兩者執行期間鎖定，停止後才能改，重啟生效。').pack(side='left', padx=(4, 0))
         self.vae_relative_tile_size.trace_add('write', lambda *_: self.sync_vae_tile_controls())
@@ -1404,6 +1478,13 @@ class ImageApp:
         self.stop_btn.pack(side='left', padx=3)
         ttk.Button(buttons, text='🌐 開繁中生圖網頁', command=self.open_web).pack(side='left', padx=3)
         ttk.Button(buttons, text='📄 開啟日誌', command=self.open_log).pack(side='left', padx=3)
+        save_btn = ttk.Button(buttons, text='💾 儲存參數', command=self._manual_save)
+        save_btn.pack(side='left', padx=3)
+        hint(save_btn, '把目前畫面上的參數寫進 image-settings.json（下次開啟自動還原）。\n'
+                       '欄位改動不會自動存檔；沒按這顆就關窗，下次仍載入上次存過的內容。\n'
+                       '目前有選模板時，會一併把參數存回該模板。')
+        self.lbl_dirty = ttk.Label(buttons, text='', foreground='#666')
+        self.lbl_dirty.pack(side='left', padx=6)
         self.status = ttk.Label(actionbar, text='未執行')
         self.status.pack(side='left', padx=14)
         logframe = ttk.LabelFrame(pane, text='Image Server 日誌（可拖曳分隔線調整高度）')
@@ -1471,15 +1552,26 @@ class ImageApp:
         self.vae_tiling.trace_add('write', lambda *_: self.sync_vae_tile_controls())
         # 切換生圖模型 → 自動套用綁定模板（沒有綁定則套預設模板）。
         self.models[self._TPL_KEY].trace_add('write', lambda *_: self._tpl_on_model_change())
-        # 手動微調任何一個模板欄位 → 存回目前選的模板（與 LLM 模式的自動記憶一致）。
-        for _var in (self.offload, self.cache_mode, self.cache_threshold, self.cache_warmup,
-                     self.vae_tiling, self.vae_relative_tile_size, self.diffusion_fa,
-                     self.conditioning_cache_size):
-            _var.trace_add('write', lambda *_: self._tpl_on_param_change())
+        # 手動微調任何參數欄位 → 只標記「有未儲存的變更」（不會自動寫檔）；
+        # 按「💾 儲存參數」才會寫 image-settings.json，有選模板時一併存回該模板。
+        _persist_vars = (self.port, self.offload, self.cache_mode, self.spectrum_w, self.diffusion_fa,
+                         self.fa, self.ref_image_args, self.conditioning_cache_size, self.extra_args,
+                         self.max_vram_reserve, self.prefix_cache_disabled, self.vae_on_cpu,
+                         self.vae_tiling, self.cache_threshold, self.cache_warmup,
+                         self.vae_relative_tile_size, self.hires_upscalers_dir, self.runtime,
+                         *self.models.values())
+        for _var in _persist_vars:
+            _var.trace_add('write', lambda *_: self._on_param_change())
         self._tpl_refresh_ui()
         # 開機：widgets 都就緒、設定也還原完了，才放行 trace 並套用模型的模板。
         self._loading = False
         self._tpl_on_model_change(force=True)
+        # 基準值＝「目前存檔／剛載入」的參數；只有跟它不同才算「有未儲存的變更」，
+        # 程式自己套模板、切換模式重啟時不會被誤判成使用者改過。
+        self._auto = False
+        self._baseline = self.settings()
+        self._dirty = False
+        self._set_dirty_label(False)
         # 表單控件全部建好後，才把滾輪綁到整棵樹（含稍後建立的子控件）。
         _bind_wheel_tree(frame)
         fit_sash()  # 設定區先量一次（視窗尚未 map 時高度可能是 1，下面會再補一次）
@@ -1579,7 +1671,7 @@ class ImageApp:
         self._log(f'[模板] 已套用「{name}」\n')
 
     def _tpl_store_current(self, name=None, quiet=False):
-        """把目前參數存回（指定或目前的）模板；自動存回走 quiet。"""
+        """把目前參數存回（指定或目前的）模板；按儲存鈕時走 quiet。"""
         name = name or self._tpl_current_name()
         if not name or name not in self._presets['templates']:
             return False
@@ -1589,34 +1681,47 @@ class ImageApp:
             self._log(f"[模板] {'已存回' if ok else '⚠ 存檔失敗：'}「{name}」\n")
         return ok
 
-    def _tpl_on_param_change(self):
-        """某個模板欄位被手動改動 → 標記為待存回。"""
-        if self._tpl_busy or self._loading:
+    def _on_param_change(self):
+        """參數欄位被改動 → 與基準值比對，真的不同才標記（不自動寫檔）。"""
+        if self._tpl_busy or self._loading or getattr(self, '_auto', False):
             return
-        if not self._tpl_current_name():
-            return
-        self._tpl_dirty = True
-        if self._tpl_save_job is not None:
-            try:
-                self.root.after_cancel(self._tpl_save_job)
-            except tk.TclError:
-                pass
-        try:
-            self._tpl_save_job = self.root.after(800, self._tpl_flush_save)
-        except tk.TclError:
-            self._tpl_save_job = None
+        dirty = self.settings() != getattr(self, '_baseline', None)
+        if dirty != getattr(self, '_dirty', False):
+            self._dirty = dirty
+            self._set_dirty_label(dirty)
 
-    def _tpl_flush_save(self):
-        """閒置 800ms 後真的把改動寫回模板檔（合併連續編輯，不每敲一鍵就寫檔）。"""
-        self._tpl_save_job = None
-        if not self._tpl_dirty or self._tpl_busy or self._loading:
+    def _set_dirty_label(self, dirty):
+        label = getattr(self, 'lbl_dirty', None)
+        if label is None:
             return
-        self._tpl_dirty = False
-        name = self._tpl_current_name()
-        if not name:
-            return
-        if self._tpl_store_current(name, quiet=True):
-            self._tpl_status(f'已自動存回「{name}」')
+        try:
+            if dirty:
+                label.config(text='● 有未儲存的變更', foreground='#b60')
+            else:
+                label.config(text='✔ 與已儲存內容相同', foreground='#666')
+        except tk.TclError:
+            pass
+
+    def save_now(self):
+        """按「💾 儲存參數」時才寫檔：image-settings.json（含目前參數）＋目前選的模板。"""
+        try:
+            save_settings(self.settings())
+        except OSError as exc:
+            self.record_failure(exc)
+            return False
+        if self._tpl_current_name() and not self._tpl_busy:
+            if self._tpl_store_current(quiet=True):
+                self._tpl_status(f'已存回「{self._tpl_current_name()}」')
+        self._dirty = False
+        self._baseline = self.settings()
+        self._set_dirty_label(False)
+        self._log('[設定] 已儲存 image-settings.json（下次開啟自動還原）\n')
+        return True
+
+    def _manual_save(self):
+        """「💾 儲存參數」按鈕：按下才寫檔（欄位改動不會自動存）。"""
+        if not self.save_now():
+            messagebox.showerror('儲存失敗', f'無法寫入：\n{SETTINGS}')
 
     def _tpl_save_as(self):
         from tkinter import simpledialog
@@ -1923,12 +2028,12 @@ class ImageApp:
         try:
             config = self.settings()
             cmd = build_cmd_from_settings(BASE, self.port.get(), config)
+            rocm_note = local_rocm_launch_note(cmd[0])
             port = int(self.port.get())
             if port_busy(port):
                 raise RuntimeError(f'埠 {port} 已被使用；請換埠，不接管別人的程序。')
             if config['conditioning_cache_size'] != 'default' and not supports_conditioning_cache(cmd[0]):
                 raise ValueError('所選 Image runtime 不支援 --conditioning-cache-size；請選 default 或更換支援版本。')
-            save_settings(config)
             self.launch_settings = config
             with self.mode_lock:
                 self.vision_loaded = False
@@ -1939,6 +2044,7 @@ class ImageApp:
             logpath.parent.mkdir(parents=True, exist_ok=True)
             self.logfile = open(logpath, 'a', encoding='utf-8')
             self.logfile.write('\n[GGUFRun] 啟動：' + subprocess.list2cmdline(cmd) + '\n')
+            self.logfile.write(rocm_note)
             # A path we dropped must be visible: the page would otherwise silently show only
             # the built-in upscalers and look like the external model "does nothing".
             hires_note = hires_dir_warning(config.get('hires_upscalers_dir'), BASE)
@@ -1949,7 +2055,8 @@ class ImageApp:
             self.refresh_log()
             self.ensure_save_service(port, logpath)
             self.proc = subprocess.Popen(cmd, cwd=str(BASE), stdout=self.logfile,
-                    stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    stderr=subprocess.STDOUT, env=local_rocm_environment(cmd[0]),
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             self.start_btn.config(state='disabled')
             self.port_entry.config(state='disabled')
             self.cache_box.config(state='disabled')
@@ -2092,20 +2199,23 @@ class ImageApp:
         try:
             config = self.launch_settings
             cmd = build_cmd_from_settings(BASE, port, config, vision=vision, offload=offload)
+            rocm_note = local_rocm_launch_note(cmd[0])
             self.logfile.write('\n[GGUFRun] ' + (self.restart_note or
                                ('切換到' + ('Qwen 指令修圖（帶 mmproj）' if vision else '無視覺權重模式'))) +
                                ('；CPU offload 開啟：' if offload else '；自動適配：') + subprocess.list2cmdline(cmd) + '\n')
+            self.logfile.write(rocm_note)
             self.logfile.flush()
             self.proc = subprocess.Popen(cmd, cwd=str(BASE), stdout=self.logfile,
-                    stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    stderr=subprocess.STDOUT, env=local_rocm_environment(cmd[0]),
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             self.launch_offset = self.logfile.tell()
             config['offload'] = offload
-            self.offload.set(offload)
+            self._auto = True           # 程式自己切模式造成的改動，不算「未儲存的變更」
             try:
-                save_settings(config)
-            except OSError as exc:
-                self.logfile.write(f'[GGUFRun] 無法保存顯存策略設定（下次啟動需重選）：{exc}\n')
-                self.logfile.flush()
+                self.offload.set(offload)
+            finally:
+                self._auto = False
+            self._baseline = self.settings()
             note = self.restart_note
             with self.mode_lock:
                 self.vision_loaded = vision
@@ -2233,22 +2343,18 @@ class ImageApp:
             except tk.TclError:
                 pass
             self._poll_after = None
-        # Flush a pending auto-save-back before the app goes away.
-        if getattr(self, '_tpl_save_job', None) is not None:
+        # 設定不自動存檔；有未存的變更時問一次（判斷已精準：程式自己造成的變動不算）。
+        if getattr(self, '_dirty', False):
             try:
-                self.root.after_cancel(self._tpl_save_job)
-            except tk.TclError:
-                pass
-            self._tpl_save_job = None
-        if getattr(self, '_tpl_dirty', False):
-            try:
-                self._tpl_flush_save()
+                if messagebox.askyesno(
+                        '尚未儲存的變更',
+                        '參數有變更，但還沒按「💾 儲存參數」。\n要現在寫入 image-settings.json 嗎？\n\n'
+                        '【是】存檔後關閉\n【否】不儲存，下次開啟回到上次儲存的內容（沒存過＝預設）'):
+                    self.save_now()
+                else:
+                    self._log('[設定] 未儲存即關閉，image-settings.json 維持上次的內容\n')
             except Exception:
                 pass
-        try:
-            save_settings(self.settings())
-        except OSError as exc:
-            self.record_failure(exc)
         self.stop()
         if self.save_service:
             self.save_service.close()

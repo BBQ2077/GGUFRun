@@ -19,6 +19,16 @@ GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com
 
 其他 [GGUF 模型](https://huggingface.co/models?search=GGUF)也能用，但要先核對模型架構、runtime 版本及授權。草稿模型、LLM LoRA、視覺 mmproj 均非純文字聊天必備。雙擊 `start-ui.bat`（或 `py -3 gguf-ui.py`）選主模型和 runtime 啟動；預設網址是 `http://127.0.0.1:18435/`。命令列 `start-gguf.bat Spark-X2.5-4B-Q4_K_M.gguf dryrun` 可先預覽指令，去掉 `dryrun` 才會啟動；此批次檔**只使用 `llama-official/`**，Bonsai 請用 GUI 選專用 runtime。
 
+## EXL3 模式（選配，AMD RX 9070 系列）
+
+GGUFRun 也能啟動 [ExLlamaV3](https://github.com/turboderp-org/exllamav3) 的 EXL3 量化模型。執行環境另外發布在 **[BBQ2077/exl3-windows-gfx1201](https://github.com/BBQ2077/exl3-windows-gfx1201)**：原生 Windows、免安裝，內附 Python／PyTorch ROCm 10.1 與預編譯核心，**只支援 gfx1201（RX 9070 XT／9070／9070 GRE、Radeon AI PRO R9700）**。不用 EXL3 就不必下載，一般 GGUF 不受影響。
+
+1. 從該倉庫的 Releases 下載 A 包（Python 環境）與 B 包（程式），都解壓到 `RUNTIMES/exl3-gfx1201/`。
+2. EXL3 模型放 `LLM-MODELS-EXL3/<模型資料夾>/`，一個模型一個資料夾。例如 [turboderp/Qwen3.8-27B-exl3](https://huggingface.co/turboderp/Qwen3.8-27B-exl3) 的 `SC_3.00bpw_H4_V4` 分支（12.1 GiB，16 GB 顯卡適用），搭配 DFlash2 草稿 [parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw](https://huggingface.co/parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw) 做投機解碼。
+3. 主模型下拉選 `[EXL3] …` 即改用 EXL3 啟動；「更多設定」的 **視覺（看圖，EXL3）** 可選 `off`／`gpu`／`ram`，`ram` 把視覺塔放系統 RAM，幾乎不佔顯存。
+
+RX 9070 16 GB 實測：Qwen3.8-27B 3.0bpw＋DFlash2，寫程式碼約 104～122 tok/s。下載指令、顯存與常見問題見執行環境倉庫的 README。
+
 ## Image 模式：下載什麼、放哪裡
 
 **1. stable-diffusion.cpp 執行環境**：從 [stable-diffusion.cpp Releases](https://github.com/leejet/stable-diffusion.cpp/releases) 下載符合硬體的 Windows **已編譯**包，將 `sd-server.exe` 與同版所需 DLL 放在 `RUNTIMES/stable-diffusion-cuda12-master-908-88411ef/`（程式預設值，對應 [master-908-88411ef](https://github.com/leejet/stable-diffusion.cpp/releases/tag/master-908-88411ef)）。若下載別的版本，可放 `RUNTIMES/<自訂名稱>/`，再在 Image 控制窗選對應 runtime。CUDA 建置需要相容 NVIDIA GPU／驅動；不同版本可能不支援部分加速選項。

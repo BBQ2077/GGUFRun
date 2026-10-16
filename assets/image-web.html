@@ -257,7 +257,6 @@ async function sendImage(body,task){
   if(!image){
     if(body.seed===-1){body.seed=crypto.getRandomValues(new Uint32Array(1))[0];task.body.seed=body.seed;queue.notify();}
     await ensureMode(body.mode||'txt2img');
-    if(body.viggleTurbo && !(await modeState()).offload)throw Error('8 GB 顯卡使用 Viggle 前，請在 Image 控制窗開啟 CPU offload 並重啟 server');
     startProgress(body.steps);
     const {mode,sourceKey,sourceKeys,maskKey,viggleTurbo,offload:legacyOffload,...requestBody}=body;
     let response;

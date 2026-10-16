@@ -664,7 +664,7 @@ async def main():
                 print('img2img mask: native mask and blank prompt; legacy queue offload ignored',flush=True)
                 # 載入作者轉好的 Viggle 融合 GGUF：頁面要自動開 Viggle、自動 6 步，且不可再疊 LoRA（會套兩次）。
                 await evaluate("document.querySelector('#mode').value='txt2img';document.querySelector('#mode').dispatchEvent(new Event('change'));document.querySelector('#enable-hr').checked=false;document.querySelector('#enable-hr').dispatchEvent(new Event('change'));document.querySelector('#viggle').value='off';document.querySelector('#viggle').dispatchEvent(new Event('change'));document.querySelector('#steps').value='20';document.querySelectorAll('#lora-list .lora-item input[type=checkbox]').forEach(c=>{if(c.checked)c.click();});void 0")
-                Fake.model_name='qwen-image-2.1-viggle-turbo-fused-Q4_K_M'
+                Fake.model_name='qwen_image_2.1_viggle_turbo_Q4_K_M'
                 await evaluate("document.querySelector('#prompt').value='fused gguf apple';void 0")
                 await evaluate("discover();void 0")
                 for _ in range(40):

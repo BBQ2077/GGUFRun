@@ -63,6 +63,26 @@ class SaveServiceTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_viggle_runs_get_a_6step_or_turbo_filename_tag(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = ImageSaveService(pathlib.Path(td), 'http://127.0.0.1:18436').start()
+            try:
+                def save(**extra):
+                    payload = dict(image=base64.b64encode(PNG).decode(), width=1, height=1,
+                                   cfg_scale=1, seed=42, sampler='Euler', duration_ms=1450) | extra
+                    req = urllib.request.Request(service.url+'/save', data=json.dumps(payload).encode(),
+                        headers={'Origin': service.origin, 'X-GGUFRun-Token':service.token,
+                                 'Content-Type':'application/json'}, method='POST')
+                    with urllib.request.urlopen(req, timeout=4) as response:
+                        return json.load(response)['filename']
+                self.assertRegex(save(steps=6, viggle=True), r'-euler-6step-1s-[0-9a-f]{12}\.png$')
+                self.assertRegex(save(steps=9, viggle=True), r'-euler-turbo-1s-[0-9a-f]{12}\.png$')
+                # 沒開 Viggle 就不加標籤。
+                self.assertRegex(save(steps=6), r'-euler-1s-[0-9a-f]{12}\.png$')
+                self.assertNotIn('turbo', save(steps=6))
+            finally:
+                service.close()
+
     def test_mode_endpoint_requires_origin_and_token(self):
         calls = []
         with tempfile.TemporaryDirectory() as td:

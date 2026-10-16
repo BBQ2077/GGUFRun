@@ -8,12 +8,45 @@ import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+TMP = None   # 暫存 fixture 放系統暫存資料夾
 MAIN_SPEC = importlib.util.spec_from_file_location('gguf_ui_image_hook', ROOT / 'gguf-ui.py')
 gguf_ui = importlib.util.module_from_spec(MAIN_SPEC)
 MAIN_SPEC.loader.exec_module(gguf_ui)
 SPEC = importlib.util.spec_from_file_location('image_ui', ROOT / 'image-ui.py')
 image_ui = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(image_ui)
+
+
+class _SilentDialogs:
+    """測試期間不跳真的對話框。
+
+    App 關窗遇到「有未儲存的變更」會彈 askyesno；測試若不回答就會讓整個測試檔卡住，
+    而且視窗會在使用者桌面上一直跳。這裡一律當成「否」（＝不寫檔），
+    要驗證「是」的流程請在測試內自行 mock.patch。
+    """
+
+    @staticmethod
+    def askyesno(*_args, **_kwargs):
+        return False
+
+    @staticmethod
+    def askokcancel(*_args, **_kwargs):
+        return False
+
+    @staticmethod
+    def showinfo(*_args, **_kwargs):
+        return None
+
+    @staticmethod
+    def showwarning(*_args, **_kwargs):
+        return None
+
+    @staticmethod
+    def showerror(*_args, **_kwargs):
+        return None
+
+
+image_ui.messagebox = _SilentDialogs
 
 
 _SHARED_ROOT = None
@@ -68,28 +101,38 @@ class LayoutTests(unittest.TestCase):
                 self.assertEqual(gguf_ui.find_runtimes(), [('llama-official/', str(base / 'RUNTIMES' / 'llama-official'))])
 
 
-class ImageHookTests(unittest.TestCase):
-    def test_main_app_launches_separate_image_window(self):
-        app = gguf_ui.App.__new__(gguf_ui.App)
-        with mock.patch.object(gguf_ui.subprocess, 'Popen') as popen:
-            app.open_image()
-        argv = popen.call_args.args[0]
-        self.assertEqual(argv[0], gguf_ui.sys.executable)
-        self.assertEqual(argv[1], str(ROOT / 'image-ui.py'))
-
-
 class ImageRuntimeTests(unittest.TestCase):
-    def test_fused_viggle_lora_directory_is_available_only_when_installed(self):
-        with tempfile.TemporaryDirectory() as td:
+    def test_lora_directory_is_available_without_a_viggle_adapter(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as td:
             base = pathlib.Path(td)
             cmd = image_ui.build_server_cmd(base, 18436)
             self.assertNotIn('--lora-model-dir', cmd)
-            adapter = base / 'IMAGE-MODELS/loras/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors'
-            adapter.parent.mkdir(parents=True)
-            adapter.write_bytes(b'fixture')
+            lora_dir = base / 'IMAGE-MODELS/loras'
+            lora_dir.mkdir(parents=True)
+            for filename in ('style adapter.safetensors', 'detail.gguf'):
+                (lora_dir / filename).write_bytes(b'fixture')
             cmd = image_ui.build_server_cmd(base, 18436)
-            self.assertEqual(cmd[cmd.index('--lora-model-dir') + 1], str(adapter.parent))
+            self.assertEqual(cmd[cmd.index('--lora-model-dir') + 1], str(lora_dir))
+            self.assertEqual(cmd.count('--lora-model-dir'), 1)
             self.assertIn('--offload-to-cpu', cmd)
+
+    def test_empty_lora_directory_is_available_for_future_adapters(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as td:
+            base = pathlib.Path(td)
+            lora_dir = base / 'IMAGE-MODELS/loras'
+            lora_dir.mkdir(parents=True)
+            cmd = image_ui.build_server_cmd(base, 18436)
+            self.assertEqual(cmd[cmd.index('--lora-model-dir') + 1], str(lora_dir))
+            self.assertNotIn('--lora', cmd)
+
+    def test_mode_switch_preserves_project_lora_directory(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as td:
+            base = pathlib.Path(td)
+            lora_dir = base / 'IMAGE-MODELS/loras'
+            lora_dir.mkdir(parents=True)
+            for vision in (False, True):
+                cmd = image_ui.build_cmd_from_settings(base, 18436, {}, vision=vision)
+                self.assertEqual(cmd[cmd.index('--lora-model-dir') + 1], str(lora_dir))
 
     def test_settings_path_is_resolved_when_called_not_at_import(self):
         with tempfile.TemporaryDirectory() as td:
@@ -253,6 +296,7 @@ class ImageRuntimeTests(unittest.TestCase):
                     self.assertEqual(str(app.spectrum_w_entry['state']), 'normal')
                     app.spectrum_w.set('0.05')
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔
                     cmd = popen.call_args.args[0]
                     self.assertEqual(cmd[cmd.index('--cache-option') + 1], 'w=0.05')
                     self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['spectrum_w'], '0.05')
@@ -327,6 +371,7 @@ class ImageRuntimeTests(unittest.TestCase):
                     app.diffusion_fa.set(True)
                     app.conditioning_cache_size.set('default')
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔
                     self.assertEqual(popen.call_args.args[0][popen.call_args.args[0].index('--cache-mode') + 1], 'spectrum')
                     self.assertEqual(json.loads(settings.read_text(encoding='utf-8'))['cache_mode'], 'spectrum')
                     self.assertIn('--diffusion-fa', popen.call_args.args[0])
@@ -394,6 +439,7 @@ class ImageRuntimeTests(unittest.TestCase):
                     app.cache_mode.set('spectrum')
                     app.diffusion_fa.set(True)
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔
                     argv = popen.call_args.args[0]
                     self.assertEqual(argv[argv.index('--conditioning-cache-size')+1], '12')
                     self.assertEqual(json.loads((base/'image-settings.json').read_text(encoding='utf-8'))['conditioning_cache_size'], '12')
@@ -636,8 +682,11 @@ class ImageRuntimeTests(unittest.TestCase):
                 app.refresh_log()
                 self.assertIn('模型缺檔', app.log.get('1.0', 'end'))
                 self.assertEqual(app.log.cget('state'), 'disabled')
+                settings_path = pathlib.Path(td) / 'image-settings.json'
+                self.assertFalse(settings_path.exists())   # 不自動存檔：沒按儲存就不該有檔案
+                app._manual_save()
                 app.close()
-                self.assertTrue((pathlib.Path(td) / 'image-settings.json').is_file())
+                self.assertTrue(settings_path.is_file())
             finally:
                 try:
                     root.destroy()
@@ -892,6 +941,7 @@ class ExtraArgsTests(unittest.TestCase):
                     app = image_ui.ImageApp(root)
                     try:
                         app.start()
+                        app._manual_save()   # 設定不會隨啟動自動寫檔
                         return (app.vae_tiling.get(), popen.call_args.args[0],
                                 json.loads(settings.read_text(encoding='utf-8')))
                     finally:
@@ -984,6 +1034,7 @@ class ExtraArgsTests(unittest.TestCase):
                     app = image_ui.ImageApp(root)
                     self.assertEqual(app.hires_upscalers_dir.get(), image_ui.HIRES_UPSCALERS_DIR_DEFAULT)
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔，這裡明確按下儲存
                     cmd = popen.call_args.args[0]
                     self.assertEqual(cmd[cmd.index('--hires-upscalers-dir') + 1],
                                      str(base / image_ui.HIRES_UPSCALERS_DIR_DEFAULT))
@@ -1110,6 +1161,7 @@ class ExtraArgsTests(unittest.TestCase):
                     app.vae_on_cpu.set(True)
                     app.vae_tiling.set(True)
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔
                     self.assertEqual(popen.call_args.args[0][-11:],
                                      ['--backend', 'vae=cpu', '--vae-tiling', '--ref-image-args',
                                       image_ui.REF_IMAGE_ARGS_DEFAULT, '--max-vram', '-3', '--model-args',
@@ -1398,6 +1450,7 @@ class FlashAttentionAndRefImageTests(unittest.TestCase):
                     self.assertEqual(app.ref_image_args.get(), image_ui.REF_IMAGE_ARGS_DEFAULT)
                     self.assertIn('預設值', app.ref_image_hint.cget('text'))
                     app.start()
+                    app._manual_save()   # 設定不會隨啟動自動寫檔
                     cmd = popen.call_args.args[0]
                     self.assertIn('--fa', cmd)
                     self.assertEqual(cmd[cmd.index('--ref-image-args') + 1], image_ui.REF_IMAGE_ARGS_DEFAULT)
