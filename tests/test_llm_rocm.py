@@ -44,23 +44,41 @@ class LlmRocmTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(note, '')
 
-    def probe_fixture(self, output, raises=False):
+    def probe_fixture(self, output, warns=False):
         with tempfile.TemporaryDirectory(dir=TMP) as folder:
             runtime = Path(folder)
             (runtime / 'ggml-hip.dll').write_bytes(b'fixture')
             cmd = [str(runtime / 'llama-server.exe')]
             response = subprocess.CompletedProcess(cmd, 0, output, '')
             with mock.patch.object(llm_rocm.subprocess, 'run', return_value=response) as run:
-                if raises:
-                    with self.assertRaisesRegex(RuntimeError, 'ROCm GPU'):
-                        llm_rocm.prepare_llama_launch(cmd, BASE)
-                else:
-                    _, note = llm_rocm.prepare_llama_launch(cmd, BASE)
-                    self.assertIn('RX 9070', note)
+                _, note = llm_rocm.prepare_llama_launch(cmd, BASE)
+                self.assertIn('⚠ 沒偵測到 ROCm 裝置（照常啟動' if warns else 'RX 9070', note)
                 self.assertEqual(run.call_args.args[0], [cmd[0], '--list-devices'])
 
-    def test_empty_device_list_blocks_silent_cpu_fallback(self):
-        self.probe_fixture('Available devices:\n (none)', raises=True)
+    def test_empty_device_list_only_warns(self):
+        self.probe_fixture('Available devices:\n (none)', warns=True)
+
+    def test_device_probe_crash_or_timeout_only_warns(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            runtime = Path(folder)
+            (runtime / 'ggml-hip.dll').write_bytes(b'fixture')
+            cmd = [str(runtime / 'llama-server.exe')]
+            for exc in (subprocess.TimeoutExpired(cmd, 20), OSError('not a valid Win32 application')):
+                with self.subTest(exc=type(exc).__name__), mock.patch.object(llm_rocm.subprocess, 'run', side_effect=exc):
+                    env, note = llm_rocm.prepare_llama_launch(cmd, BASE)
+                self.assertIn('照常啟動', note)
+                self.assertIn('PATH', env)
+
+    def test_cuda_and_other_runtimes_are_not_probed(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            runtime = Path(folder) / 'llama-b11681-bin-win-cuda-12.4-x64'
+            runtime.mkdir()
+            (runtime / 'ggml-cuda.dll').write_bytes(b'fixture')
+            with mock.patch.object(llm_rocm.subprocess, 'run') as probe:
+                env, note = llm_rocm.prepare_llama_launch([str(runtime / 'llama-server.exe')], folder)
+            probe.assert_not_called()
+            self.assertEqual(note, '')
+            self.assertEqual(env, dict(os.environ))
 
     def test_rocm_device_is_reported(self):
         self.probe_fixture('Available devices:\n ROCm0: AMD Radeon RX 9070 (16304 MiB)')
@@ -118,15 +136,26 @@ class LlmRocmTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'hipblas.dll'):
                 llm_rocm.verify_managed_runtime(runtime / 'llama-server.exe', base)
 
-    def test_missing_hip_backend_blocks_cpu_fallback(self):
+    def test_managed_runtime_problems_only_warn(self):
         with tempfile.TemporaryDirectory(dir=TMP) as folder:
             base = Path(folder)
-            runtime, _ = self.make_managed_fixture(base)
+            runtime, sdk = self.make_managed_fixture(base)
             (runtime / 'ggml-hip.dll').unlink()
             with mock.patch.object(llm_rocm.subprocess, 'run') as probe:
-                with self.assertRaisesRegex(RuntimeError, 'ggml-hip.dll'):
-                    llm_rocm.prepare_llama_launch([str(runtime / 'llama-server.exe')], base)
+                _, note = llm_rocm.prepare_llama_launch([str(runtime / 'llama-server.exe')], base)
             probe.assert_not_called()
+            self.assertIn('[ROCm] ⚠ LLM ROCm 元件未齊備', note)
+            self.assertIn('照常啟動', note)
+
+    def test_sdk_manifest_gpu_arch_is_not_enforced(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            base = Path(folder)
+            runtime, sdk = self.make_managed_fixture(base)
+            path = sdk / 'sdk-manifest.json'
+            data = json.loads(path.read_text(encoding='utf-8'))
+            data['gpu_arch'] = 'gfx1200'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            llm_rocm.verify_managed_runtime(runtime / 'llama-server.exe', base)
 
     def test_missing_required_inventory_entry_is_rejected(self):
         with tempfile.TemporaryDirectory(dir=TMP) as folder:
@@ -197,11 +226,7 @@ class LlmRocmTests(unittest.TestCase):
             ok = subprocess.CompletedProcess(cmd, 0, ' ROCm0: AMD Radeon RX 9070 (16304 MiB)', '')
             with mock.patch.object(llm_rocm.subprocess, 'run', return_value=ok):
                 _, note = llm_rocm.prepare_llama_launch(cmd, base)
-            self.assertIn('[ROCm] b11681；SDK 10.1.0', note)
-            bad = subprocess.CompletedProcess(cmd, 0, 'Available devices:\n (none)', '')
-            with mock.patch.object(llm_rocm.subprocess, 'run', return_value=bad):
-                with self.assertRaisesRegex(RuntimeError, 'llama-b11681-rocm-sdk-10.1.0-x64/'):
-                    llm_rocm.prepare_llama_launch(cmd, base)
+            self.assertIn('[ROCm] b11681；SDK 10.1.0；專案元件 SHA256 驗證完成', note)
 
     def test_gui_passes_the_checked_environment_to_server(self):
         source = (BASE / 'gguf-ui.py').read_text(encoding='utf-8')

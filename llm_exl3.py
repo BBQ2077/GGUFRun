@@ -172,15 +172,17 @@ def assess(path, runtime):
         return "error", "找不到 EXL3 Runtime（RUNTIMES/ 下需要有標示 exllamav3 的 runtime.json）"
     if not is_exl3(path):
         return "error", "不是完整的 EXL3 模型資料夾（缺 config.json，或量化格式不是 exl3）"
+    # 架構清單、量化版本、顯存估算都只是提示：不擋啟動，能不能跑由 runtime 實際載入決定
     cap = capabilities(runtime)
     arch = architecture(path)
     supported = cap.get("architectures") or []
+    hints = []
     if supported and arch not in supported:
-        return "error", f"Runtime（ExLlamaV3 {cap.get('exllamav3_version', '?')}）不支援 {arch or '未知'} 架構"
+        hints.append(f"{arch or '未知'} 不在 ExLlamaV3 {cap.get('exllamav3_version', '?')} 的架構清單")
     need = quant_config(path).get("version")
     have = cap.get("exllamav3_version")
     if need and have and _version(need) > _version(have):
-        return "error", f"模型以 ExLlamaV3 {need} 量化，Runtime 是 {have}，需要更新 Runtime"
+        hints.append(f"模型以 ExLlamaV3 {need} 量化，Runtime 是 {have}")
     gpu, ngram = weight_bytes(path)
     if not gpu:
         return "error", "資料夾內沒有 .safetensors 權重"
@@ -193,9 +195,11 @@ def assess(path, runtime):
     if ngram:
         note += f"｜n-gram 查表 {ngram / 2 ** 30:.1f} GiB 留在硬碟"
     if gpu > vram * 0.97:
-        return "error", note + "：權重放不進顯存"
-    if gpu > vram - 2.5 * 2 ** 30:
-        return "warn", note + "：剩餘顯存少，Context 請調小"
+        hints.append("權重可能放不進顯存")
+    elif gpu > vram - 2.5 * 2 ** 30:
+        hints.append("剩餘顯存少，Context 請調小")
+    if hints:
+        return "warn", note + "：⚠ " + "；".join(hints) + "（照常啟動，以實際載入結果為準）"
     return "ok", note
 
 
@@ -342,14 +346,18 @@ def build_cmd(main, runtime, base, *, port, ctx, ctk, ctv, think, effort, specul
         draft = None if drafter == "-" else (drafter or guess_draft(main, base))
         if draft:
             if not draft_matches(main, draft):
-                raise ValueError(f"{os.path.basename(draft)} 不是與這個主模型相容的 EXL3 草稿模型"
-                                 "（GGUF 草稿不能用在 EXL3）")
+                note += f"[EXL3] ⚠ {os.path.basename(draft)} 看起來跟主模型不搭（照常啟動，以實際載入結果為準）\n"
             block = draft_block(draft)
-            if not block:
-                raise ValueError("目前支援 DFlash2 EXL3 草稿（需有 dflash_config.block_size）")
-            n, clamp = draft_count(draft_max, block)
-            cmd += ["-dm", draft, "-ndt", str(n)]
-            note += clamp + f"[EXL3] 投機解碼：{os.path.basename(draft)}，一次草稿 {n} 個 token（上限 {block - 1}）\n"
+            cmd += ["-dm", draft]
+            if block:
+                n, clamp = draft_count(draft_max, block)
+                cmd += ["-ndt", str(n)]
+                note += clamp + f"[EXL3] 投機解碼：{os.path.basename(draft)}，一次草稿 {n} 個 token（上限 {block - 1}）\n"
+            else:
+                if str(draft_max or "").strip():
+                    n, _ = draft_count(draft_max, 2 ** 31)
+                    cmd += ["-ndt", str(n)]
+                note += f"[EXL3] 投機解碼：{os.path.basename(draft)}（沒有 dflash_config.block_size，草稿長度由 runtime 決定）\n"
         else:
             note += "[EXL3] 沒有相容的 EXL3 草稿 → 只用主模型解碼\n"
     for key, flag in SAMPLING:

@@ -175,12 +175,20 @@ class Exl3AdapterTests(unittest.TestCase):
 
     def test_rejects_bad_inputs(self):
         base = str(self.base)
-        for over in (dict(ctx="1000"), dict(ctx="abc"), dict(ctk="q5_1"),
-                     dict(drafter=str(self.base / "LLM-MODELS" / "x.gguf"))):
+        for over in (dict(ctx="1000"), dict(ctx="abc"), dict(ctk="q5_1")):
             with self.subTest(over=over), self.assertRaises(ValueError):
                 llm_exl3.build_cmd(self.main, self.rt, base, **self.kw(**over))
         with self.assertRaises(ValueError):
             llm_exl3.build_cmd(self.draft, self.rt, base, **self.kw())
+
+    def test_odd_draft_is_passed_through_with_a_warning(self):
+        odd = str(self.base / "LLM-MODELS" / "x.gguf")
+        cmd, note = llm_exl3.build_cmd(self.main, self.rt, str(self.base), **self.kw(drafter=odd))
+        self.assertEqual(cmd[cmd.index("-dm") + 1], odd)
+        self.assertNotIn("-ndt", cmd)
+        self.assertIn("看起來跟主模型不搭", note)
+        cmd, _ = llm_exl3.build_cmd(self.main, self.rt, str(self.base), **self.kw(drafter=odd, draft_max="6"))
+        self.assertEqual(cmd[cmd.index("-ndt") + 1], "6")
 
     def test_weight_bytes_splits_ngram_table(self):
         d = self.base / "small"
@@ -193,7 +201,8 @@ class Exl3AdapterTests(unittest.TestCase):
     def test_assess_levels(self):
         self.assertEqual(llm_exl3.assess(self.main, self.rt)[0], "ok")
         big = make_model(self.base, "Big", size=int(15.6 * GiB))
-        self.assertEqual(llm_exl3.assess(big, self.rt)[0], "error")
+        self.assertEqual(llm_exl3.assess(big, self.rt)[0], "warn")
+        self.assertIn("可能放不進顯存", llm_exl3.assess(big, self.rt)[1])
         tight = make_model(self.base, "Tight", size=14 * GiB)
         self.assertEqual(llm_exl3.assess(tight, self.rt)[0], "warn")
         ng = make_model(self.base, "Ngram", size=10 * GiB, ngram=40 * GiB)
@@ -201,9 +210,14 @@ class Exl3AdapterTests(unittest.TestCase):
         self.assertEqual(level, "ok")
         self.assertIn("n-gram", why)
         arch = make_model(self.base, "Unknown", arch="MysteryForCausalLM")
-        self.assertIn("不支援", llm_exl3.assess(arch, self.rt)[1])
+        self.assertEqual(llm_exl3.assess(arch, self.rt)[0], "warn")
+        self.assertIn("不在 ExLlamaV3", llm_exl3.assess(arch, self.rt)[1])
         newer = make_model(self.base, "Newer", version="1.7.0")
-        self.assertIn("更新 Runtime", llm_exl3.assess(newer, self.rt)[1])
+        self.assertEqual(llm_exl3.assess(newer, self.rt)[0], "warn")
+        self.assertIn("Runtime 是", llm_exl3.assess(newer, self.rt)[1])
+        for m in (big, arch, newer):   # 只提示，不擋啟動
+            cmd, note = llm_exl3.build_cmd(m, self.rt, str(self.base), **self.kw(speculative=False))
+            self.assertIn("照常啟動", note)
         self.assertEqual(llm_exl3.assess(self.main, "")[0], "error")
 
 

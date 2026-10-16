@@ -1821,7 +1821,7 @@ class App:
             df = "不使用草稿"
         elif sel:
             df = ("DF：" + os.path.basename(sel)) if llm_exl3.draft_matches(p, sel) \
-                else "⚠ 這個草稿不是相容的 EXL3 DFlash2，啟動會被擋下"
+                else "⚠ 這個草稿看起來跟主模型不搭，照常啟動，以實際載入結果為準"
         else:
             d = llm_exl3.guess_draft(p, BASE)
             df = f"DF：{os.path.basename(d)}（自動配對）" if d else "沒有相容的 EXL3 草稿 → 純主模型解碼"
@@ -2155,10 +2155,8 @@ class App:
                 self._log("[LoRA] 已清空 LoRA 設定，改用重新建好的指令啟動\n")
         try:
             launch_env, gpu_note = prepare_llama_launch(cmd, BASE)
-        except Exception as e:
-            self._log(f"[GPU 預檢] {e}\n")
-            messagebox.showerror("GPU 啟動檢查", str(e))
-            return
+        except Exception as e:   # 預檢只是提示，出錯也照常啟動
+            launch_env, gpu_note = os.environ.copy(), f"[GPU 預檢] ⚠ 預檢沒跑完（{e}），照常啟動\n"
         self._log("$ " + " ".join(cmd) + "\n")
         self._log(gpu_note)
         if getattr(self, "_forced_fa", False):

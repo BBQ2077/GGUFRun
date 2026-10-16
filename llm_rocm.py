@@ -100,8 +100,8 @@ def verify_managed_runtime(executable, base):
     if (base / manifest.get('sdk_manifest', '')).resolve() != expected_sdk_manifest:
         raise RuntimeError('LLM ROCm SDK 驗證路徑不符')
     sdk_manifest = _load_manifest(expected_sdk_manifest, info[1])
-    if (base / sdk_manifest.get('library_bin', '')).resolve() != sdk / 'bin' or sdk_manifest.get('gpu_arch') != 'gfx1201':
-        raise RuntimeError('LLM ROCm SDK 裝置或函式庫路徑不符')
+    if (base / sdk_manifest.get('library_bin', '')).resolve() != sdk / 'bin':
+        raise RuntimeError('LLM ROCm SDK 函式庫路徑不符')
     _verify_files(manifest, base, runtime, CORE_NAMES)
     _verify_files(sdk_manifest, base, sdk, SDK_NAMES)
 
@@ -122,25 +122,30 @@ def cpu_requested(command):
 
 
 def prepare_llama_launch(command, base):
+    """回傳 (環境變數, 啟動說明)。這裡只做檢查與提示，不擋啟動；真正能不能跑由 llama-server 自己回報。"""
     executable = command[0]
     runtime = Path(executable).resolve().parent
     env = llama_environment(executable, base)
-    verify_managed_runtime(executable, base)
-    if not (runtime / 'ggml-hip.dll').is_file() or cpu_requested(command):
-        return env, ''
-    result = subprocess.run([executable, '--list-devices'], cwd=runtime, env=env,
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20,
-                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    output = result.stdout + result.stderr
-    devices = [line.strip() for line in output.splitlines() if re.search(r'ROCm\d+\s*:', line)]
-    if result.returncode or not devices:
-        installed = managed_runtimes(base)
-        hint = f'或選擇 {installed[0]}/' if installed else '或安裝 llama-b<版本>-rocm-sdk-<SDK版本>-x64'
-        raise RuntimeError('ROCm GPU 後端未載入，已停止啟動。請檢查 hipBLAS／rocBLAS 與裝置核心包，'
-                           f'{hint}。裝置偵測：' + output[-1500:])
-    note = '[GPU 預檢] ' + '; '.join(devices) + '\n'
     info = managed_info(runtime)
+    note = ''
     if info:
-        note += f'[ROCm] b{info[0]}；SDK {info[1]}／gfx1201；專案元件 SHA256 驗證完成\n'
+        try:
+            verify_managed_runtime(executable, base)
+            note += f'[ROCm] b{info[0]}；SDK {info[1]}；專案元件 SHA256 驗證完成\n'
+        except RuntimeError as exc:
+            note += f'[ROCm] ⚠ {exc}（照常啟動）\n'
         note += f'[ROCm] BLAS：{Path(base) / sdk_relative(info[1]) / "bin"}\n'
-    return env, note
+    if not (runtime / 'ggml-hip.dll').is_file() or cpu_requested(command):
+        return env, note
+    try:
+        result = subprocess.run([executable, '--list-devices'], cwd=runtime, env=env,
+                                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        output = result.stdout + result.stderr
+        devices = [line.strip() for line in output.splitlines() if re.search(r'ROCm\d+\s*:', line)]
+    except (OSError, subprocess.SubprocessError) as exc:
+        result, output, devices = None, str(exc), []
+    if devices and not result.returncode:
+        return env, '[GPU 預檢] ' + '; '.join(devices) + '\n' + note
+    tail = ' '.join(output.split())[-600:]
+    return env, f'[GPU 預檢] ⚠ 沒偵測到 ROCm 裝置（照常啟動，結果以下方 llama.cpp 訊息為準）：{tail}\n' + note
