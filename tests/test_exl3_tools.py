@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import unittest
+import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SERVER = ROOT / "RUNTIMES/exl3-gfx1201/server.py"
@@ -190,6 +191,46 @@ class ServerCase(unittest.TestCase):
             except urllib.error.HTTPError as e:
                 return e.code, dict(e.headers), e.read()
         return self.serve("x", go, ready)
+
+
+class Progress(unittest.TestCase):
+    """Periodic progress lines while prefilling / generating, like llama-server's print_timing."""
+    def run_log(self, steps):
+        import contextlib
+        import io
+        import types
+        now = [1000.0]
+        job = types.SimpleNamespace(time_first_prefill=1000.0, time_first_token=None, new_tokens=0,
+                                    cached_pages=0, cached_tokens=20, accepted_draft_tokens=None, rejected_draft_tokens=None)
+        live = srv.LiveTimings(job, 4116)
+        log = srv.ProgressLog(live, clock=lambda: now[0])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), unittest.mock.patch.object(srv.time, "time", lambda: now[0]):
+            for t, kind, value in steps:
+                now[0] = 1000.0 + t
+                if kind == "prefill":
+                    log.prefill({"curr_progress": value, "max_progress": 4116})
+                else:
+                    if job.time_first_token is None:
+                        job.time_first_token = now[0]
+                    job.new_tokens = value
+                    if kind == "draft":
+                        job.accepted_draft_tokens, job.rejected_draft_tokens = 30, 10
+                    log.generate()
+        return out.getvalue().splitlines()
+
+    def test_prefill_lines_every_three_seconds(self):
+        lines = self.run_log([(1, "prefill", 500), (3.2, "prefill", 1020), (4, "prefill", 2000), (6.4, "prefill", 2580)])
+        self.assertEqual(lines, ["[EXL3] 預填 1000/4096 tok（24%）｜3.2 s｜312.5 tok/s",
+                                 "[EXL3] 預填 2560/4096 tok（62%）｜6.4 s｜400.0 tok/s"])
+
+    def test_generation_lines_show_average_and_recent_speed(self):
+        lines = self.run_log([(10, "gen", 1), (12, "gen", 25), (13, "gen", 37), (14, "gen", 50), (16, "draft", 100)])
+        self.assertEqual(lines, ["[EXL3] 生成 37 tok｜平均 12.3 tok/s｜近 3 秒 12.0 tok/s",
+                                 "[EXL3] 生成 100 tok｜平均 16.7 tok/s｜近 3 秒 21.0 tok/s｜草稿接受 30/40（75%）"])
+
+    def test_short_reply_prints_nothing_extra(self):
+        self.assertEqual(self.run_log([(0.5, "prefill", 99), (1, "gen", 1), (2, "gen", 12)]), [])
 
 
 class Stream(ServerCase):
