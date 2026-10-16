@@ -27,6 +27,10 @@ except ImportError:
     def prepare_llama_launch(command, base):
         return os.environ.copy(), ""
 try:
+    import ram_release
+except ImportError:
+    ram_release = None
+try:
     import llm_exl3
 except ImportError:
     class llm_exl3:  # noqa: N801  與真模組同名的替身：一律回報「不是 EXL3」
@@ -2186,6 +2190,8 @@ class App:
         threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
         _SPAWNED.add(proc)
         self.active_port = port
+        self._ram_release_cmd = list(cmd)
+        self._ram_released_pid = None
         _launch_lora = self.adv["lora"].get().strip()
         self._active_lora_path = os.path.normcase(os.path.abspath(_launch_lora)) if _launch_lora else ""
         self._lora_restart_note = None
@@ -2345,6 +2351,7 @@ class App:
                 model = os.path.basename(info.get("model_path", "") or "")[:40]
                 nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
                 self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
+                self._release_loaded_copy()
                 self._apply_lora_scale(p)
             else:
                 self.lbl.config(text=f"狀態：port={p} 有服務，但不是可辨識的 llama-server", foreground="#b80")
@@ -2353,6 +2360,27 @@ class App:
         else:
             self.lbl.config(text="狀態：未執行", foreground="#b00")
         self.root.after(2000, self._poll)
+
+    def _release_loaded_copy(self):
+        """模型載入完成後做一次：把已複製進顯存的模型檔頁面交還 Windows（只處理本 UI 啟動的 mmap server）。"""
+        child = proc
+        if ram_release is None or not child or child.poll() is not None:
+            return
+        if getattr(self, "_ram_released_pid", None) == child.pid:
+            return
+        self._ram_released_pid = child.pid
+        if not ram_release.eligible(getattr(self, "_ram_release_cmd", [])):
+            self._log("[RAM] 載入模式不是 mmap（--no-mmap／mlock／none／dio），不釋放 working set\n")
+            return
+
+        def work():
+            ok, before, after, err = ram_release.release(child.pid)
+            if ok and before is not None and after is not None:
+                self._log(f"[RAM] 模型已載入：釋放已上顯存的模型檔頁面，working set {before:.2f} → {after:.2f} GiB"
+                          "（CPU 層用到時自動從檔案快取讀回）\n")
+            else:
+                self._log(f"[RAM] ⚠ 釋放 working set 沒成功：{err}\n")
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_lora_scale(self, port):
         """server 就緒後，把 LoRA 強度以 API 套用（改值會即時重套，不必重啟）。

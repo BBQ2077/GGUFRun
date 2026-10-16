@@ -19,6 +19,8 @@ GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com
 
 其他 [GGUF 模型](https://huggingface.co/models?search=GGUF)也能用，但要先核對模型架構、runtime 版本及授權。草稿模型、LLM LoRA、視覺 mmproj 均非純文字聊天必備。雙擊 `start-ui.bat`（或 `py -3 gguf-ui.py`）選主模型和 runtime 啟動；預設網址是 `http://127.0.0.1:18435/`。命令列 `start-gguf.bat Spark-X2.5-4B-Q4_K_M.gguf dryrun` 可先預覽指令，去掉 `dryrun` 才會啟動；此批次檔**只使用 `llama-official/`**，Bonsai 請用 GUI 選專用 runtime。
 
+**3. 載入後自動釋放 RAM**：mmap 載入時，放上 GPU 的權重會先從模型檔讀進 RAM 再複製到顯存，Windows 版 llama.cpp 之後不放掉這些頁面，顯存和 RAM 各留一份。GUI 在 server 第一次回報 RUNNING 時，對自己啟動的 llama-server 呼叫一次 `EmptyWorkingSet`（`ram_release.py`），日誌顯示 `[RAM] 模型已載入：釋放已上顯存的模型檔頁面，working set X → Y GiB`；CPU 層（如 `--n-cpu-moe` 的專家）用到時自動從檔案快取讀回。實測 RX 9070 + 32 GB RAM 跑一個 68 GB 的 MoE GGUF（自動放置、`-c 32768`）：載入後的 14.4 GiB 已上顯存權重不再佔 RAM，跑完兩個請求後可用 RAM 由 0.3 GB 變成 7.4 GB，生成速度相同。`--no-mmap`、`--mlock`、載入模式 `mlock`／`mmap+mlock`／`none`／`dio` 不做釋放；外部接管的 server 與 EXL3 不處理。不需要時刪除 `ram_release.py` 即可。
+
 ## EXL3 模式（選配，AMD RX 9070 系列）
 
 GGUFRun 也能啟動 [ExLlamaV3](https://github.com/turboderp-org/exllamav3) 的 EXL3 量化模型。執行環境另外發布在 **[BBQ2077/exl3-windows-gfx1201](https://github.com/BBQ2077/exl3-windows-gfx1201)**：原生 Windows、免安裝，內附 Python／PyTorch ROCm 10.1 與預編譯核心，**只支援 gfx1201（RX 9070 XT／9070／9070 GRE、Radeon AI PRO R9700）**。不用 EXL3 就不必下載，一般 GGUF 不受影響。
