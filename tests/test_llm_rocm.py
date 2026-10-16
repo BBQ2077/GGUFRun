@@ -14,6 +14,8 @@ TMP = None   # 暫存 fixture 放系統暫存資料夾
 sys.path.insert(0, str(BASE))
 import llm_rocm
 
+RUNTIME_NAME = 'llama-b11681-rocm-sdk-10.1.0-x64'
+
 
 class LlmRocmTests(unittest.TestCase):
     def test_managed_environment_is_child_local_and_excludes_legacy_sdk(self):
@@ -21,7 +23,7 @@ class LlmRocmTests(unittest.TestCase):
         original = {'PATH': str(repair / 'packages/_rocm_sdk_core/bin') + os.pathsep + 'C:/Windows/System32',
                     'HIP_PATH': str(repair / 'packages/_rocm_sdk_core')}
         with mock.patch.dict(os.environ, original, clear=True):
-            result = llm_rocm.llama_environment(BASE / 'RUNTIMES' / llm_rocm.MANAGED_RUNTIME / 'llama-server.exe', BASE)
+            result = llm_rocm.llama_environment(BASE / 'RUNTIMES' / RUNTIME_NAME / 'llama-server.exe', BASE)
             self.assertEqual(dict(os.environ), original)
         self.assertIn('rocm-sdk-10.1.0', result['PATH'])
         self.assertNotIn(str(repair / 'packages/_rocm_sdk_core/bin'), result['PATH'])
@@ -63,9 +65,9 @@ class LlmRocmTests(unittest.TestCase):
     def test_rocm_device_is_reported(self):
         self.probe_fixture('Available devices:\n ROCm0: AMD Radeon RX 9070 (16304 MiB)')
 
-    def make_managed_fixture(self, base):
-        runtime = base / 'RUNTIMES' / llm_rocm.MANAGED_RUNTIME
-        sdk = base / llm_rocm.SDK_RELATIVE
+    def make_managed_fixture(self, base, name=RUNTIME_NAME, sdk_version='10.1.0'):
+        runtime = base / 'RUNTIMES' / name
+        sdk = base / llm_rocm.sdk_relative(sdk_version)
         inventories = []
         for root, names in ((runtime, llm_rocm.CORE_NAMES), (sdk, llm_rocm.SDK_NAMES)):
             files = {}
@@ -75,9 +77,9 @@ class LlmRocmTests(unittest.TestCase):
                 path.write_bytes(b'fixture')
                 files[path.relative_to(base).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
             inventories.append(files)
-        manifest = {'sdk_version': '10.1.0', 'runtime': runtime.relative_to(base).as_posix(),
+        manifest = {'sdk_version': sdk_version, 'runtime': runtime.relative_to(base).as_posix(),
                     'sdk_manifest': (sdk / 'sdk-manifest.json').relative_to(base).as_posix(), 'files': inventories[0]}
-        sdk_manifest = {'sdk_version': '10.1.0', 'gpu_arch': 'gfx1201',
+        sdk_manifest = {'sdk_version': sdk_version, 'gpu_arch': 'gfx1201',
                         'library_bin': (sdk / 'bin').relative_to(base).as_posix(), 'files': inventories[1]}
         (runtime / 'rocm-runtime.json').write_text(json.dumps(manifest), encoding='utf-8')
         (sdk / 'sdk-manifest.json').write_text(json.dumps(sdk_manifest), encoding='utf-8')
@@ -147,6 +149,59 @@ class LlmRocmTests(unittest.TestCase):
             path.write_text(json.dumps(data), encoding='utf-8')
             with self.assertRaisesRegex(RuntimeError, '元件未齊備'):
                 llm_rocm.verify_managed_runtime(runtime / 'llama-server.exe', base)
+
+    def test_runtime_name_gives_build_and_sdk(self):
+        self.assertEqual(llm_rocm.managed_info('llama-b11681-rocm-sdk-10.1.0-x64'), ('11681', '10.1.0'))
+        self.assertEqual(llm_rocm.managed_info(BASE / 'RUNTIMES/llama-b9-rocm-sdk-11.0.2-x64'), ('9', '11.0.2'))
+        for other in ('llama-official', 'llama-b11642-bin-win-vulkan-x64', 'llama-b11681-rocm-sdk-x64'):
+            self.assertIsNone(llm_rocm.managed_info(other))
+
+    def test_installed_runtimes_are_listed_newest_first(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            base = Path(folder)
+            for name in ('llama-b11642-rocm-sdk-10.1.0-x64', 'llama-b11681-rocm-sdk-10.1.0-x64',
+                         'llama-b999-rocm-sdk-10.1.0-x64', 'llama-official'):
+                (base / 'RUNTIMES' / name).mkdir(parents=True)
+                (base / 'RUNTIMES' / name / 'llama-server.exe').write_bytes(b'')
+            (base / 'RUNTIMES/llama-b20000-rocm-sdk-10.1.0-x64').mkdir()   # 沒有 llama-server.exe
+            self.assertEqual(llm_rocm.managed_runtimes(base), ['llama-b11681-rocm-sdk-10.1.0-x64',
+                             'llama-b11642-rocm-sdk-10.1.0-x64', 'llama-b999-rocm-sdk-10.1.0-x64'])
+
+    def test_each_runtime_uses_its_own_sdk_folder(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            base = Path(folder)
+            runtime, sdk = self.make_managed_fixture(base, 'llama-b12000-rocm-sdk-10.2.0-x64', '10.2.0')
+            llm_rocm.verify_managed_runtime(runtime / 'llama-server.exe', base)
+            stale = str(base / 'RUNTIMES/rocm-sdk-10.1.0/bin')
+            with mock.patch.dict(os.environ, {'PATH': stale + os.pathsep + 'C:/Windows'}, clear=True):
+                path = llm_rocm.llama_environment(runtime / 'llama-server.exe', base)['PATH'].split(os.pathsep)
+            self.assertEqual(path[:2], [str(runtime.resolve()), str(sdk.resolve() / 'bin')])
+            self.assertNotIn(stale, path)
+
+    def test_manifest_sdk_version_must_match_folder_name(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            base = Path(folder)
+            runtime, _ = self.make_managed_fixture(base)
+            path = runtime / 'rocm-runtime.json'
+            data = json.loads(path.read_text(encoding='utf-8'))
+            data['sdk_version'] = '10.0.0'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, '清單內容不符'):
+                llm_rocm.verify_managed_runtime(runtime / 'llama-server.exe', base)
+
+    def test_launch_note_reports_the_selected_build(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as folder:
+            base = Path(folder)
+            runtime, _ = self.make_managed_fixture(base)
+            cmd = [str(runtime / 'llama-server.exe')]
+            ok = subprocess.CompletedProcess(cmd, 0, ' ROCm0: AMD Radeon RX 9070 (16304 MiB)', '')
+            with mock.patch.object(llm_rocm.subprocess, 'run', return_value=ok):
+                _, note = llm_rocm.prepare_llama_launch(cmd, base)
+            self.assertIn('[ROCm] b11681；SDK 10.1.0', note)
+            bad = subprocess.CompletedProcess(cmd, 0, 'Available devices:\n (none)', '')
+            with mock.patch.object(llm_rocm.subprocess, 'run', return_value=bad):
+                with self.assertRaisesRegex(RuntimeError, 'llama-b11681-rocm-sdk-10.1.0-x64/'):
+                    llm_rocm.prepare_llama_launch(cmd, base)
 
     def test_gui_passes_the_checked_environment_to_server(self):
         source = (BASE / 'gguf-ui.py').read_text(encoding='utf-8')
