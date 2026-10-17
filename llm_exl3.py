@@ -172,7 +172,7 @@ def runtime_features(runtime):
             text = f.read()
     except OSError:
         return set()
-    feats = {flag for flag in ("--auto-draft", "--gemv-wmma", "--gemv-max-m", "--dflash2-host-cb",
+    feats = {flag for flag in ("--auto-draft", "--gemv-wmma", "--gemv-max-m", "--gemv-wmma-tn", "--dflash2-host-cb",
                                "--qc-staging-sliced") if f"'{flag}'" in text}
     if "cpu_cache_size=int(" in text:
         feats.add("-ccs")
@@ -362,6 +362,10 @@ ACCEL_FIELDS = (
      "新版預設一次最多 64 列（例：8 路 × 草稿 7 ＝ 64 列）。\n"
      "超過 32 列時用另一種加總順序，跟 32 列以內的結果只差在最後一位小數，精度一樣；\n"
      "但 greedy（溫度 0）輸出偶爾會差一個字。在意逐字一致才勾選；勾選後 33～64 列會走較慢的舊路徑。"),
+    ("exl3_tn", "快路徑輸入共用 (--gemv-wmma-tn)", "entry",
+     "快路徑裡每個 GPU 工作組一次算幾塊輸出。像廚房備料：原本每道菜各自把同一批食材洗切一次（填 1），\n"
+     "改成一次備好再分給 2 或 4 道菜共用（填 2／4），省下重複搬資料的時間。只影響 1～4 bit 的權重層，其他照舊。\n"
+     "留空／1＝原做法。2／4 的速度還沒有完整實測；覺得變慢或輸出怪異就清空。舊版 runtime 沒有這個開關，會自動略過。"),
     ("exl3_autodraft", "自動草稿長度 (--auto-draft)", "check",
      "只在 DSpark（投機解碼）模式有效。依「目前同時生成幾路」分別實測每種草稿長度的速度，自動挑最快的\n"
      "（範圍 0 ～ 草稿長度上限；0＝暫停打草稿，草稿模型照樣跟上進度，隨時可恢復）；要快 5% 以上才換，並定期重測。\n"
@@ -381,7 +385,7 @@ ACCEL_FIELDS = (
      "這台 32 GB RAM 建議 4～8。"),
     ("exl3_dcd", "前文快取 SSD 資料夾 (-dcd)", "entry",
      "RAM 那層也滿時，再往 SSD 這個資料夾存；server 重開後還在，同樣的長提示詞下次幾乎秒讀。\n"
-     "要先填「前文快取 RAM GB」才會生效。請填專用資料夾，例：D:\\ExampleProject\\exl3-cache（不存在會自動建立）。"),
+     "要先填「前文快取 RAM GB」才會生效。請填專用資料夾，例：D:\\GGUFRun\\exl3-cache（不存在會自動建立）。"),
     ("exl3_dcs", "SSD 快取上限 GB (-dcs)", "entry",
      "SSD 快取資料夾最多佔多少 GB（所有模型共用），超過時刪最舊的。留空＝50 GB。"),
     ("exl3_hostcb", "實驗：草稿查表放 RAM (#490)", "check",
@@ -396,6 +400,7 @@ ACCEL_KEYS = tuple(k for k, *_ in ACCEL_FIELDS) + ("exl3_runtime",)
 ACCEL_SHORT = {
     "exl3_no_wmma": "預設開：多路／長草稿時的加速主力，一般不要勾。",
     "exl3_m32": "預設 64 列；勾選＝逐字一致優先，速度較慢。",
+    "exl3_tn": "留空＝原做法；填 2／4＝輸入共用（實驗）。",
     "exl3_autodraft": "依目前路數自動挑最快的草稿長度，路數多時自動暫停草稿（只在 DSpark）。",
     "exl3_hdt": "輸出照抄前文時一次猜一大段；建議 16～32，留空＝關。",
     "exl3_ngram": "不用草稿模型、從前文找相同片段猜；只在 Normal 模式。",
@@ -620,6 +625,12 @@ def _accel_args(cmd, runtime, accel):
         add("--gemv-wmma", "0")
     if on("exl3_m32"):
         add("--gemv-max-m", "32")
+    tn = get("exl3_tn")
+    if tn and tn != "1":
+        if tn not in ("2", "4"):
+            raise ValueError(f"快路徑輸入共用只能填 1、2 或 4：{tn}")
+        if add("--gemv-wmma-tn", tn):
+            note += f"[EXL3] 快路徑輸入共用：每組一次算 {tn} 塊\n"
     if "--gemv-wmma" in feats:
         note += ("[EXL3] 多列快路徑：" + ("關" if on("exl3_no_wmma") else
                  f"開（一次最多 {32 if on('exl3_m32') else 64} 列）") + "\n")
