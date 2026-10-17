@@ -25,7 +25,7 @@ GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com
 
 GGUFRun 也能啟動 [ExLlamaV3](https://github.com/turboderp-org/exllamav3) 的 EXL3 量化模型。執行環境另外發布在 **[BBQ2077/exl3-windows-gfx1201](https://github.com/BBQ2077/exl3-windows-gfx1201)**：原生 Windows、免安裝，內附 Python／PyTorch ROCm 10.1 與預編譯核心，**只支援 gfx1201（RX 9070 XT／9070／9070 GRE、Radeon AI PRO R9700）**。不用 EXL3 就不必下載，一般 GGUF 不受影響。
 
-1. 從該倉庫的 Releases 下載 A 包（Python 環境）與 B 包（程式），都解壓到 `RUNTIMES/exl3-gfx1201/`。
+1. 從該倉庫的 Releases 下載 A 包（Python 環境）與 B 包（程式），都解壓到 `RUNTIMES/exl3-gfx1201-b/`（舊的 `exl3-gfx1201/` 仍可用，介面會優先選 `-b`）。A 包用 `v2026.10.16`，B 包抓最新。
 2. EXL3 模型放 `LLM-MODELS-EXL3/<模型資料夾>/`，一個模型一個資料夾。例如 [turboderp/Qwen3.8-27B-exl3](https://huggingface.co/turboderp/Qwen3.8-27B-exl3) 的 `SC_3.00bpw_H4_V4` 分支（12.1 GiB，16 GB 顯卡適用），搭配 DFlash2 草稿 [parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw](https://huggingface.co/parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw) 做投機解碼。
 3. 主模型下拉選 `[EXL3] …` 即改用 EXL3 啟動；「更多設定」的 **視覺（看圖，EXL3）** 可選 `off`／`gpu`／`ram`，`ram` 把視覺塔放系統 RAM，幾乎不佔顯存。
 
