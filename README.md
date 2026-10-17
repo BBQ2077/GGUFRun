@@ -29,7 +29,25 @@ GGUFRun 也能啟動 [ExLlamaV3](https://github.com/turboderp-org/exllamav3) 的
 2. EXL3 模型放 `LLM-MODELS-EXL3/<模型資料夾>/`，一個模型一個資料夾。例如 [turboderp/Qwen3.8-27B-exl3](https://huggingface.co/turboderp/Qwen3.8-27B-exl3) 的 `SC_3.00bpw_H4_V4` 分支（12.1 GiB，16 GB 顯卡適用），搭配 DFlash2 草稿 [parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw](https://huggingface.co/parth-thakre/Qwen3.8-27B-DFlash2-EXL3-3.0bpw) 做投機解碼。
 3. 主模型下拉選 `[EXL3] …` 即改用 EXL3 啟動；「更多設定」的 **視覺（看圖，EXL3）** 可選 `off`／`gpu`／`ram`，`ram` 把視覺塔放系統 RAM，幾乎不佔顯存。
 
-RX 9070 16 GB 實測：Qwen3.8-27B 3.0bpw＋DFlash2，寫程式碼約 104～122 tok/s。下載指令、顯存與常見問題見執行環境倉庫的 README。
+`RUNTIMES/` 下可以同時放多套 EXL3 環境：介面會優先用 `exl3-gfx1201-b`（新版），沒有時才退回 `exl3-gfx1201`。
+「EXL3 進階」區可調的項目會依該套 `server.py` 實際支援的參數自動顯示；舊版沒有的開關會自動略過，不會讓 server 啟動失敗。
+
+**同時生成多路**：新版 runtime 的 `--parallel` 讓多個對話同時生成（1～8 路，預設 2），每一路有自己的串流與取消。
+每路 Context 分開設定；路數 × 每路 Context 就是總 KV 容量，顯存不夠時先降每路 Context 或路數。
+
+**加速與快取**（EXL3 進階，皆為選配）：
+
+| 項目 | 作用 |
+|---|---|
+| 多列快路徑 | 預設開，一次算 8～64 列；可改回 32 列上限或關閉比對。 |
+| 自動草稿長度 `--auto-draft` | 依目前路數實測每種草稿深度的速度，自動挑最快的一檔（含暫停草稿）。 |
+| 前文快取 RAM／SSD | `-ccs` 把舊前文搬進系統 RAM；`-dcd`／`-dcs` 再往 SSD 存，重開 server 後仍可用。 |
+| 重複內容長草稿 `-hdt` | 輸出照抄前文時一次驗證一大段，適合改程式碼、複述文件。 |
+| 純 n-gram 草稿 `-ngram` | 沒載草稿模型時，從前文找相同片段當草稿。 |
+| 實驗項 `#490`／`#517` | 草稿查表放 RAM、量化 KV 分段搬運；預設關閉，效果依顯卡而異。 |
+
+RX 9070 16 GB 實測：Qwen3.8-27B 3.0bpw＋DFlash2，單路寫程式碼約 104～122 tok/s；2.20bpw 模型 8 路同時生成
+（每路 8192 context、各 600 tokens）合計約 206～246 tok/s，開草稿深度 3 時最高。下載指令、顯存與常見問題見執行環境倉庫的 README。
 
 ## Image 模式：下載什麼、放哪裡
 

@@ -2,11 +2,16 @@
 import importlib.util
 import json
 import pathlib
+import os
 import unittest
 import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SERVER = ROOT / "RUNTIMES/exl3-gfx1201/server.py"
+# EXL3_TEST_RUNTIME can point to a separately checked-out runtime repository.
+SERVER = (pathlib.Path(os.environ["EXL3_TEST_RUNTIME"]).resolve() / "server.py"
+          if os.environ.get("EXL3_TEST_RUNTIME") else
+          next((p for p in (ROOT / "RUNTIMES/exl3-gfx1201-b/server.py", ROOT / "RUNTIMES/exl3-gfx1201/server.py")
+                if p.is_file()), ROOT / "RUNTIMES/exl3-gfx1201/server.py"))
 if SERVER.is_file():
     SPEC = importlib.util.spec_from_file_location("exl3_server_tools", SERVER)
     srv = importlib.util.module_from_spec(SPEC)
@@ -117,7 +122,7 @@ class FakeGenerator:
         self.prefilled = False
 
     def enqueue(self, job):
-        pass
+        return 0
 
     def num_remaining_jobs(self):
         return 1 if self.pieces else 0
@@ -125,9 +130,9 @@ class FakeGenerator:
     def iterate(self):
         if not self.prefilled:
             self.prefilled = True
-            return [{"stage": "prefill", "eos": False, "curr_progress": 64, "max_progress": 99}]
+            return [{"serial": 0, "stage": "prefill", "eos": False, "curr_progress": 64, "max_progress": 99}]
         piece = self.pieces.pop(0)
-        out = [{"stage": "streaming", "text": piece}]
+        out = [{"serial": 0, "stage": "streaming", "text": piece}]
         if not self.pieces:
             out[0].update(eos=True, eos_reason="stop_token", new_tokens=40, prompt_tokens=100, time_generate=1.0,
                           time_prefill=0.5, cached_tokens=20, accepted_draft_tokens=30, rejected_draft_tokens=10)
@@ -146,12 +151,13 @@ class ServerCase(unittest.TestCase):
         import threading
         from http.server import ThreadingHTTPServer
 
-        class Engine:
-            ready, error, request_id, latest = True, None, None, None
-            lock, cancelled = threading.Lock(), threading.Event()
-            args = argparse.Namespace(alias="m", cache_size=65536)
-            torch = type("T", (), {"inference_mode": staticmethod(contextlib.nullcontext)})
-            generator = FakeGenerator(raw)
+        class Engine(srv.Engine):
+            def __init__(self):
+                super().__init__(argparse.Namespace(alias="m", cache_size=65536))
+                self.ready = True
+                self.torch = type("T", (), {"inference_mode": staticmethod(contextlib.nullcontext)})
+                self.generator = FakeGenerator(raw)
+                self.scheduler = srv.GenerationScheduler(self, self.parallel)
 
             def prepare(self, b):
                 tools = srv.request_tools(b.get("tools"), b.get("tool_choice"))
@@ -168,6 +174,7 @@ class ServerCase(unittest.TestCase):
                 return fn(f"http://127.0.0.1:{httpd.server_port}")
             finally:
                 httpd.shutdown()
+                httpd.engine.scheduler.close()
                 httpd.server_close()
 
     def post(self, raw, body, path="/v1/chat/completions"):

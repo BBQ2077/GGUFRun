@@ -4,6 +4,7 @@ import base64
 import importlib.util
 import io
 import pathlib
+import os
 import sys
 import types
 import unittest
@@ -11,7 +12,11 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SERVER = ROOT / "RUNTIMES/exl3-gfx1201/server.py"
+# EXL3_TEST_RUNTIME can point to a separately checked-out runtime repository.
+SERVER = (pathlib.Path(os.environ["EXL3_TEST_RUNTIME"]).resolve() / "server.py"
+          if os.environ.get("EXL3_TEST_RUNTIME") else
+          next((p for p in (ROOT / "RUNTIMES/exl3-gfx1201-b/server.py", ROOT / "RUNTIMES/exl3-gfx1201/server.py")
+                if p.is_file()), ROOT / "RUNTIMES/exl3-gfx1201/server.py"))
 if SERVER.is_file():
     SPEC = importlib.util.spec_from_file_location("exl3_server_vision", SERVER)
     srv = importlib.util.module_from_spec(SPEC)

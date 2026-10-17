@@ -38,11 +38,25 @@ except ImportError:
         VISION_MODES = ("off",)
         NA_REASONS, EXL3_NOTES, LLAMA_ONLY = {}, {}, ()
         GGUF_NA = {"vision": "需要 llm_exl3.py（EXL3 支援）"}
-        find_runtime = staticmethod(lambda base: None)
+        PLACEMENT_FIELDS = ()
+        ACCEL_FIELDS, ACCEL_KEYS, RUNTIME_HELP, ACCEL_SHORT = (), (), "", {}
+        find_runtime = staticmethod(lambda base, prefer="": None)
+        list_runtimes = staticmethod(lambda base: [])
         list_models = staticmethod(lambda base, draft=False: [])
         is_exl3 = staticmethod(lambda path: False)
+        is_lilicorr = staticmethod(lambda path: False)
         has_vision = staticmethod(lambda path: False)
         find_servers = staticmethod(lambda runtime: [])
+
+        @staticmethod
+        def parallel_count(value):
+            try:
+                count = int(str(value).strip())
+            except ValueError:
+                raise ValueError("同時生成數必須是 1～8 的整數") from None
+            if not 1 <= count <= 8:
+                raise ValueError("同時生成數必須是 1～8 的整數")
+            return count
 
 try:                                    # 通用：以本程式所在資料夾為基準，不寫死路徑
     BASE = os.path.dirname(os.path.abspath(__file__))
@@ -901,6 +915,7 @@ class App:
         self._ui_events = queue.Queue()
         self._closed = False
         self.active_port = None
+        self._api_ready_key = None
         self._engine_widgets = []   # [(欄位 key, widget, Tip, 原本 state)]：EXL3 時變灰／加說明
         self._active_lora_path = None
         self._lora_restart_note = None
@@ -1004,7 +1019,7 @@ class App:
                 self.lbl_model.config(text="!! 找不到這個模型檔", foreground="#b00")
                 return
             _dsel = self._drafter_map.get(self.drafter.get(), "")
-            if _dsel and _dsel != "-" and llm_exl3.is_exl3(_dsel) != llm_exl3.is_exl3(p):
+            if _dsel and _dsel != "-" and (llm_exl3.is_exl3(_dsel) or llm_exl3.is_lilicorr(_dsel)) != llm_exl3.is_exl3(p):
                 # 草稿和主模型不同格式（EXL3／GGUF 不能混用）→ 改回自動配對；set 會再觸發一次本函式
                 self._log(f"[模型] 草稿 {os.path.basename(_dsel)} 和主模型格式不同"
                           f"（{'EXL3' if llm_exl3.is_exl3(p) else 'GGUF'} 主模型），已改回「自動配對」\n")
@@ -1083,7 +1098,7 @@ class App:
 
         # 不常改的項目收進可折疊區塊（預設收合，讓日誌拿得到高度）
         advf = ttk.Frame(cfg)
-        advf.grid(row=4, column=0, columnspan=3, sticky="ew")
+        advf.grid(row=5, column=0, columnspan=3, sticky="ew")
         # 空間不足時：讓「說明欄」(column 2) 承擔壓縮，輸入欄位 (column 1) 保留固定寬度。
         # （若把 weight 放在 column 1，Tk 會優先把它壓成 0 寬 → 輸入框整排消失）
         advf.columnconfigure(1, weight=0, minsize=110)
@@ -1111,8 +1126,8 @@ class App:
         cb_ctx = ttk.Combobox(cfg, textvariable=self.ctx, width=10,
                               values=["4096", "8192", "16384", "32768", "65536", "131072"])
         cb_ctx.grid(row=1, column=1, sticky="w")
-        self._engine_reg("ctx", cb_ctx, Tip(cb_ctx, "模型一次能記住的 token 數。\n4096 = 模型原生訓練長度\n≥65536 必須勾「KV 放系統 RAM」"))
-        ttk.Label(cfg, text="一次能記住多少 token，越大越吃記憶體",
+        self._engine_reg("ctx", cb_ctx, Tip(cb_ctx, "每一路各自可使用的 token 容量。\n總 KV 容量＝Context × 同時生成數。\n增加路數不會縮減每路 Context；改動後重新啟動 server。"))
+        ttk.Label(cfg, text="每路可使用的 token 數；總 KV 容量＝Context × 同時生成數",
                   foreground="#666").grid(row=1, column=2, sticky="w", padx=6)
 
         # GPU 層數（-ngl / -ngld）
@@ -1171,6 +1186,27 @@ class App:
         self.adv["lora_scale"] = tk.StringVar(value="")
         # EXL3 視覺塔（--vision off/gpu/ram）：放 adv 字典，設定記憶與模板會一起存
         self.adv["vision"] = tk.StringVar(value="off")
+        for _key, _label, _help in llm_exl3.PLACEMENT_FIELDS:
+            self.adv[_key] = tk.StringVar(value="")
+        self.adv["exl3_embd"] = tk.StringVar(value="")
+        # EXL3 進階（runtime 選擇＋加速／快取／草稿）：空字串＝預設行為，模板缺值時也安全
+        self.adv["exl3_runtime"] = tk.StringVar(value="")
+        for _key, *_rest in llm_exl3.ACCEL_FIELDS:
+            self.adv[_key] = tk.StringVar(value="")
+        self.adv["parallel"] = tk.StringVar(value="2")
+        # Context／KV 型別／路數改動 → EXL3 狀態列重算預估顯存
+        for _v in (self.ctx, self.ctk, self.ctv, self.adv["parallel"]):
+            _v.trace_add("write", lambda *_a: self._sync_model_fn() if self._sync_model_fn and self.is_exl3() else None)
+        ttk.Label(cfg, text="同時生成數").grid(row=4, column=0, sticky="w", padx=6, pady=4)
+        self.cb_parallel = ttk.Combobox(cfg, textvariable=self.adv["parallel"], width=10,
+                                       state="readonly", values=[str(n) for n in range(1, 9)])
+        self.cb_parallel.grid(row=4, column=1, sticky="w")
+        ttk.Label(cfg, text="預設 2 路；各路保留完整 Context，主模型與草稿各載一份",
+                  foreground="#666").grid(row=4, column=2, sticky="w", padx=6)
+        Tip(self.cb_parallel, "真正同時生成的請求數（1～8）。\n"
+                              "Context 是每路容量，例如 65536 × 2 路＝總 KV 131072 token。\n"
+                              "各路有獨立的對話狀態，模型權重共用；較多路數會使用更多快取與暫存。\n"
+                              "按「💾 儲存參數」可記住；改動後重新啟動 server 套用。")
 
         # 思考模式（-rea auto/on/off）：本 build 官方預設就是 auto
         ttk.Label(advf, text="思考模式（-rea）").grid(row=1, column=0, sticky="w", padx=6, pady=4)
@@ -1270,6 +1306,81 @@ class App:
                          "ram：權重留在系統 RAM，每張圖多花約 0.1～0.2 秒串流上顯卡。\n"
                          "開啟後，llama.cpp 網頁會出現附加圖片的按鈕。"))
         self.adv["vision"].trace_add("write", lambda *_a: _sync_model())
+
+        # EXL3 DRAM／CPU 放置：不常用，預設收合成一行；收合時按鈕上顯示已填的值
+        _exwrap = ttk.Frame(advf)
+        _exwrap.grid(row=8, column=0, columnspan=3, sticky="ew", padx=6, pady=(6, 2))
+        _exwrap.columnconfigure(0, weight=1)
+        self.exdram_open = tk.BooleanVar(value=False)
+        self.btn_exdram = ttk.Button(_exwrap, command=self._toggle_exdram)
+        self.btn_exdram.grid(row=0, column=0, sticky="w")
+        exdram = ttk.LabelFrame(_exwrap, text="EXL3 進階：Runtime／放置／加速／快取（改動後重新啟動 server）")
+        exdram.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.exdram = exdram
+
+        def _qmark(row, text):
+            """每一列右邊的「?」：滑鼠移上去看完整說明。"""
+            q = ttk.Label(exdram, text=" ? ", foreground="#06c", cursor="question_arrow")
+            q.grid(row=row, column=2, sticky="w")
+            Tip(q, text)
+
+        _row = 0
+        ttk.Label(exdram, text="EXL3 Runtime").grid(row=_row, column=0, sticky="w", padx=5, pady=3)
+        _rt_names = ["自動（新版優先）"] + [n for n, _p in llm_exl3.list_runtimes(BASE)]
+        self._rt_display = tk.StringVar()
+        _rt = ttk.Combobox(exdram, textvariable=self._rt_display, values=_rt_names, width=16, state="readonly")
+        _rt.grid(row=_row, column=1, sticky="w", padx=5)
+
+        def _rt_from_var(*_a):
+            v = self.adv["exl3_runtime"].get()
+            self._rt_display.set(v if v in _rt_names else _rt_names[0])
+
+        def _rt_to_var(*_a):
+            v = self._rt_display.get()
+            self.adv["exl3_runtime"].set("" if v == _rt_names[0] else v)
+        _rt.bind("<<ComboboxSelected>>", _rt_to_var)
+        self.adv["exl3_runtime"].trace_add("write", _rt_from_var)
+        _rt_from_var()
+        _qmark(_row, llm_exl3.RUNTIME_HELP)
+        self._rt_now = ttk.Label(exdram, foreground="#666")
+        self._rt_now.grid(row=_row, column=3, sticky="w", padx=5)
+        self._engine_reg("exl3_runtime", _rt, Tip(_rt, llm_exl3.RUNTIME_HELP))
+        _row += 1
+        for _key, _label, _help in llm_exl3.PLACEMENT_FIELDS:
+            ttk.Label(exdram, text=_label).grid(row=_row, column=0, sticky="w", padx=5, pady=3)
+            _entry = ttk.Entry(exdram, textvariable=self.adv[_key], width=10)
+            _entry.grid(row=_row, column=1, sticky="w", padx=5)
+            _qmark(_row, _help)
+            ttk.Label(exdram, text=_help, foreground="#666", wraplength=270, justify="left").grid(
+                row=_row, column=3, sticky="w", padx=5, pady=3)
+            self._engine_reg(_key, _entry, Tip(_entry, _help))
+            _row += 1
+        _embd_help = "不把完整 token embedding 表常駐系統 RAM；每次 forward 從檔案映射讀所需列。未勾選＝runtime 預設。"
+        _embd = ttk.Checkbutton(exdram, text="Embedding 逐次讀取 (-embd)",
+                               variable=self.adv["exl3_embd"], onvalue="1", offvalue="")
+        _embd.grid(row=_row, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+        _qmark(_row, _embd_help)
+        self._engine_reg("exl3_embd", _embd, Tip(_embd, _embd_help))
+        _row += 1
+        ttk.Separator(exdram).grid(row=_row, column=0, columnspan=4, sticky="ew", padx=5, pady=4)
+        _row += 1
+        for _key, _label, _kind, _help in llm_exl3.ACCEL_FIELDS:
+            _short = getattr(llm_exl3, "ACCEL_SHORT", {}).get(_key) or _help.split("\n")[0]
+            if _kind == "check":
+                _w = ttk.Checkbutton(exdram, text=_label, variable=self.adv[_key], onvalue="1", offvalue="")
+                _w.grid(row=_row, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+            else:
+                ttk.Label(exdram, text=_label).grid(row=_row, column=0, sticky="w", padx=5, pady=3)
+                _w = ttk.Entry(exdram, textvariable=self.adv[_key], width=16 if _key == "exl3_dcd" else 10)
+                _w.grid(row=_row, column=1, sticky="w", padx=5)
+            _qmark(_row, _help)
+            ttk.Label(exdram, text=_short, foreground="#666", wraplength=270, justify="left").grid(
+                row=_row, column=3, sticky="w", padx=5, pady=3)
+            self._engine_reg(_key, _w, Tip(_w, _help))
+            _row += 1
+        for _key in [x[0] for x in llm_exl3.PLACEMENT_FIELDS] + ["exl3_embd"] + list(llm_exl3.ACCEL_KEYS):
+            self.adv[_key].trace_add("write", lambda *_a: self._apply_exdram())
+        self._apply_exdram()
 
         # 模型載入模式（-lm / -lzm）只在「進階取樣設定」視窗的「載入模式」分頁，
         # 不在此處重複（避免同一組參數兩處輸入）。
@@ -1463,6 +1574,49 @@ class App:
             _c.configure(scrollregion=_c.bbox("all"))
         except Exception:
             pass
+
+    def _toggle_exdram(self):
+        self.exdram_open.set(not self.exdram_open.get())
+        self._apply_exdram()
+
+    def _apply_exdram(self):
+        """依 self.exdram_open 展開／收起「EXL3 進階」；收合時把已填的值列在按鈕上。"""
+        btn = getattr(self, "btn_exdram", None)
+        if btn is None:
+            return
+        flags = {"exl3_mcl": "-mcl", "exl3_mcs": "-mcs", "exl3_mct": "-mct",
+                 "exl3_chunk": "-chunk_size", "exl3_rcs": "-rcs"}
+        parts = []
+        for key, flag in flags.items():
+            var = self.adv.get(key)
+            val = var.get().strip() if var is not None else ""
+            if val:
+                parts.append(f"{flag} {val}")
+        if self.adv.get("exl3_embd") is not None and self.adv["exl3_embd"].get():
+            parts.append("-embd")
+        _labels = {"exl3_no_wmma": "關快路徑", "exl3_m32": "32列", "exl3_autodraft": "自動草稿",
+                   "exl3_hdt": "-hdt", "exl3_ngram": "-ngram", "exl3_ccs": "-ccs", "exl3_dcd": "SSD快取",
+                   "exl3_dcs": "-dcs", "exl3_hostcb": "#490", "exl3_qcslice": "#517"}
+        for key, tag in _labels.items():
+            var = self.adv.get(key)
+            val = var.get().strip() if var is not None else ""
+            if val:
+                parts.append(tag if val == "1" or key == "exl3_dcd" else f"{tag} {val}")
+        rt = self._exl3_rt() if hasattr(self, "adv") else EXL3_RUNTIME
+        rt_name = os.path.basename(rt) if rt else "（沒有 EXL3 runtime）"
+        if getattr(self, "_rt_now", None) is not None:
+            self._rt_now.config(text="目前使用：" + rt_name)
+        summary = "｜" + rt_name + ("｜" + " ".join(parts) if parts else "")
+        _open = bool(self.exdram_open.get())
+        btn.config(text=("▾ " if _open else "▸ ") + "EXL3 進階" + (" " if _open else summary))
+        try:
+            if _open:
+                self.exdram.grid()
+            else:
+                self.exdram.grid_remove()
+        except Exception:
+            pass
+        self._sync_scroll()
 
     def _toggle_more(self):
         # 只有「使用者按下按鈕」才把該區捲進畫面；載入設定／程式化還原時不要捲，
@@ -1808,13 +1962,23 @@ class App:
             self._engine_widgets = alive
         self._engine_is_exl3 = exl3
 
+    def _exl3_rt(self):
+        """目前選的 EXL3 runtime 目錄：EXL3 進階區有指定就用它，否則用啟動時找到的預設（新版優先）。"""
+        var = self.adv.get("exl3_runtime") if hasattr(self, "adv") else None
+        name = var.get().strip() if var is not None else ""
+        if name:
+            hit = llm_exl3.find_runtime(BASE, name)
+            if hit and os.path.basename(hit) == name:
+                return hit
+        return EXL3_RUNTIME
+
     def is_exl3(self):
         """目前選的主模型是不是 EXL3 資料夾。"""
         return llm_exl3.is_exl3(self.model_path())
 
     def _exl3_status(self, p):
         """模型狀態列（EXL3）：相容性、顯存、草稿配對。"""
-        level, why = llm_exl3.assess(p, EXL3_RUNTIME)
+        level, why = llm_exl3.assess(p, self._exl3_rt())
         if level == "error":
             return {"text": "!! EXL3：" + why, "foreground": "#b00"}
         sel = self._drafter_map.get(self.drafter.get(), "")
@@ -1834,17 +1998,35 @@ class App:
         if llm_exl3.has_vision(p):
             _v = self.adv["vision"].get() if hasattr(self, "adv") else "off"
             vis = "｜視覺：" + {"gpu": "GPU", "ram": "RAM"}.get(_v, "關閉")
-        return {"text": f"✅ EXL3｜{why}｜{df}{vis}", "foreground": "#b70" if warn else "#2a7"}
+        vram = ""
+        try:
+            _spec = _mode is None or _mode.get() == "dspark"
+            _d = "" if not _spec or sel == "-" else (sel or llm_exl3.guess_draft(p, BASE) or "")
+            _par = self.adv["parallel"].get() if hasattr(self, "adv") and "parallel" in self.adv else "2"
+            _vt, _vl, _vtext = llm_exl3.vram_check(p, self._exl3_rt(), self.ctx.get(), _par,
+                                                   self.ctk.get(), self.ctv.get(), _d)
+            if _vt and _vt > _vl:
+                vram = f"｜⚠ {_vtext} 高於建議 {_vl / 2 ** 30:.1f}，Windows 可能把權重搬到 RAM 而變慢，請調小 Context 或路數"
+                warn = True
+            elif _vt:
+                vram = "｜" + _vtext
+        except Exception:
+            vram = ""
+        return {"text": f"✅ EXL3｜{why}｜{df}{vis}{vram}", "foreground": "#b70" if warn else "#2a7"}
 
     def _build_exl3_cmd(self, port):
         mp = self.model_path()
         sel = self._drafter_map.get(self.drafter.get(), "")
         cmd, note = llm_exl3.build_cmd(
-            mp, EXL3_RUNTIME, BASE, port=port, ctx=self.ctx.get(), ctk=self.ctk.get(),
+            mp, self._exl3_rt(), BASE, port=port, ctx=self.ctx.get(), ctk=self.ctk.get(),
             ctv=self.ctv.get(), think=self.think.get(), effort=self.adv["rea_effort"].get(),
             speculative=self.mode.get() == "dspark", drafter=sel,
             sampling={k: v.get() for k, v in self.adv.items()}, draft_max=self.adv["sdnmax"].get(),
-            vision=self.adv["vision"].get())
+            vision=self.adv["vision"].get(),
+            parallel=self.adv["parallel"].get() if "parallel" in self.adv else "2",
+            placement={k: self.adv[k].get() for k in
+                       [x[0] for x in llm_exl3.PLACEMENT_FIELDS] + ["exl3_embd"] if k in self.adv},
+            accel={k: self.adv[k].get() for k in llm_exl3.ACCEL_KEYS if k in self.adv})
         ignored = [k for k in llm_exl3.LLAMA_ONLY if k in self.adv and self.adv[k].get().strip()]
         if self.rbud.get().strip() not in ("", "-1"):
             ignored.append("思考預算")
@@ -1864,9 +2046,17 @@ class App:
             raise FileNotFoundError("尚未選擇主模型。")
         if not os.path.exists(mp):
             raise FileNotFoundError(f"找不到模型檔：{mp}")
+        parallel_var = self.adv.get("parallel")
+        parallel = llm_exl3.parallel_count(parallel_var.get() if parallel_var is not None else "2")
+        try:
+            context = int(self.ctx.get().strip())
+        except ValueError:
+            raise ValueError("Context 必須是正整數") from None
+        if context < 1:
+            raise ValueError("Context 必須是正整數")
         cmd = [self.server_exe(), "-m", mp, "--alias", model_alias(mp),
                "--host", "127.0.0.1", "--port", p,
-               "-c", self.ctx.get(), "-np", "1"]
+               "-c", str(context * parallel), "-np", str(parallel)]
         # 取樣參數（在「⚙ 進階取樣設定」視窗調整；留空 = 不送出該參數）
         for _r in ADV_CORE:
             _v = self.adv[_r[1]].get().strip()
@@ -2190,6 +2380,7 @@ class App:
         threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
         _SPAWNED.add(proc)
         self.active_port = port
+        self._api_ready_key = None
         self._ram_release_cmd = list(cmd)
         self._ram_released_pid = None
         _launch_lora = self.adv["lora"].get().strip()
@@ -2209,7 +2400,9 @@ class App:
         global proc
         busy = pids_listening_on(port)
         if busy:
-            ours = llm_exl3.find_servers(EXL3_RUNTIME)
+            ours = {}
+            for _n, _rt in (llm_exl3.list_runtimes(BASE) or [("", EXL3_RUNTIME)]):
+                ours.update(llm_exl3.find_servers(_rt))
             mine = sorted(p for p in busy if p in ours)
             if mine and len(mine) == len(busy):
                 if not messagebox.askyesno(
@@ -2236,7 +2429,7 @@ class App:
         self._log("$ " + subprocess.list2cmdline(cmd) + "\n")
         self._log(self._spec_note)
         try:
-            proc = subprocess.Popen(cmd, cwd=EXL3_RUNTIME, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(cmd, cwd=self._exl3_rt(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception as e:
             messagebox.showerror("啟動失敗", str(e))
@@ -2244,6 +2437,7 @@ class App:
         threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
         _SPAWNED.add(proc)
         self.active_port = port
+        self._api_ready_key = None
         self.external_pid = None
         self._external_kill_allowed = False
         self._active_lora_path = ""
@@ -2275,6 +2469,7 @@ class App:
         self.external_pid = None
         self._external_kill_allowed = False
         self.active_port = None
+        self._api_ready_key = None
         self._active_lora_path = None
         self._lora_restart_note = None
         self.btn_start.config(state="normal")
@@ -2313,6 +2508,7 @@ class App:
                     if proc is child:
                         proc = None
                         self.active_port = None
+                        self._api_ready_key = None
                         self._active_lora_path = None
                         self._lora_restart_note = None
                         self.btn_start.config(state="normal")
@@ -2343,23 +2539,48 @@ class App:
                 st = info.get("status")
                 if st == "ok":
                     self.lbl.config(text=f"狀態：RUNNING（EXL3）  port={p}  ctx={nctx}  {model}", foreground="#080")
+                    self._log_api_ready(p, info)
                 elif st == "error":
+                    self._api_ready_key = None
                     self.lbl.config(text=f"狀態：EXL3 載入失敗：{str(info.get('error'))[:80]}", foreground="#b00")
                 else:
+                    self._api_ready_key = None
                     self.lbl.config(text=f"狀態：EXL3 載入模型中…  port={p}  {model}", foreground="#b80")
             elif isinstance(info, dict) and not info.get("_err"):
                 model = os.path.basename(info.get("model_path", "") or "")[:40]
                 nctx = info.get("default_generation_settings", {}).get("n_ctx", "?")
                 self.lbl.config(text=f"狀態：RUNNING  port={p}  ctx={nctx}  {model}", foreground="#080")
+                self._log_api_ready(p, info)
                 self._release_loaded_copy()
                 self._apply_lora_scale(p)
             else:
+                self._api_ready_key = None
                 self.lbl.config(text=f"狀態：port={p} 有服務，但不是可辨識的 llama-server", foreground="#b80")
         elif alive:
+            self._api_ready_key = None
             self.lbl.config(text="狀態：啟動中（載入模型）…", foreground="#b80")
         else:
+            self._api_ready_key = None
             self.lbl.config(text="狀態：未執行", foreground="#b00")
         self.root.after(2000, self._poll)
+
+    def _log_api_ready(self, port, info):
+        """服務就緒後列出可直接使用的 API 資訊，同一服務只顯示一次。"""
+        key = (port, getattr(proc, "pid", None), getattr(self, "external_pid", None),
+               info.get("model_path"), info.get("alias"))
+        if getattr(self, "_api_ready_key", None) == key:
+            return
+        models = http_get("/v1/models", timeout=2, port=port)
+        rows = models.get("data") if isinstance(models, dict) else None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+            return
+        model_id = rows[0].get("id")
+        if not isinstance(model_id, str) or not model_id:
+            return
+        self._log("\n".join(("[API] OpenAI 相容介面已就緒",
+                             f"Base URL：http://127.0.0.1:{port}/v1",
+                             f"Model：{model_id}", "")))
+        self._api_ready_key = key
 
     def _release_loaded_copy(self):
         """模型載入完成後做一次：把已複製進顯存的模型檔頁面交還 Windows（只處理本 UI 啟動的 mmap server）。"""
@@ -2514,6 +2735,8 @@ class App:
             var.set(adv[k] if isinstance(adv.get(k), str) else "")
         if not self.adv["vision"].get():
             self.adv["vision"].set("off")
+        if "parallel" in self.adv and not self.adv["parallel"].get():
+            self.adv["parallel"].set("2")
 
     def _clear_lora_state(self):
         """清除模板／模型專屬 LoRA，以及執行中套用狀態快取。"""
@@ -2958,6 +3181,7 @@ class App:
                     self.external_pid = sorted(busy)[0]
                     self._external_kill_allowed = False
                     self.active_port = port
+                    self._api_ready_key = None
                     self.btn_start.config(state="disabled")
                     self.btn_stop.config(state="normal")
                     self.lbl.config(text=f"狀態：外部 server  PID {self.external_pid}", foreground="#080")
@@ -2975,6 +3199,7 @@ class App:
                 self.external_pid = sorted(busy)[0]
                 self._external_kill_allowed = True
                 self.active_port = port
+                self._api_ready_key = None
                 self.btn_start.config(state="disabled")
                 self.btn_stop.config(state="normal")
                 self._log(f"[預檢] 接管既有 server（PID {self.external_pid}），不重新啟動\n")

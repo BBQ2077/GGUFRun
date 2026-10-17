@@ -167,6 +167,58 @@ class Exl3AdapterTests(unittest.TestCase):
         cmd, _ = llm_exl3.build_cmd(self.main, self.rt, base, **self.kw(draft_max="0", speculative=False))
         self.assertNotIn("-ndt", cmd)
 
+    def test_dram_placement_flags_defaults_and_zeros(self):
+        base = str(self.base)
+        place = {"exl3_mcl": "22", "exl3_mct": "6", "exl3_embd": "1"}
+        cmd, note = llm_exl3.build_cmd(self.main, self.rt, base, **self.kw(placement=place))
+        for flag, value in (("-mcl", "22"), ("-mct", "6"), ("-chunk_size", "512"), ("-rcs", "0.25")):
+            self.assertEqual(cmd[cmd.index(flag) + 1], value)
+        self.assertIn("-embd", cmd)
+        self.assertNotIn("-mcs", cmd)
+        self.assertIn("DRAM 放置", note)
+        place = {"exl3_mcl": "0", "exl3_mcs": "192", "exl3_chunk": "256", "exl3_rcs": "0"}
+        cmd, _ = llm_exl3.build_cmd(self.main, self.rt, base, **self.kw(placement=place))
+        for flag, value in (("-mcs", "192"), ("-chunk_size", "256"), ("-rcs", "0")):
+            self.assertEqual(cmd[cmd.index(flag) + 1], value)
+        self.assertNotIn("-mcl", cmd)
+        self.assertNotIn("-embd", cmd)
+        cmd, _ = llm_exl3.build_cmd(self.main, self.rt, base, **self.kw(placement={"exl3_mcl": "0", "exl3_mcs": "0"}))
+        self.assertNotIn("-mcl", cmd)
+        self.assertNotIn("-mcs", cmd)
+
+    def test_dram_placement_rejects_invalid_values(self):
+        for place in ({"exl3_mcl": "22", "exl3_mcs": "192"}, {"exl3_mcl": "-1"},
+                      {"exl3_mcs": "1.5"}, {"exl3_mct": "0"}, {"exl3_chunk": "0"},
+                      {"exl3_rcs": "-0.1"}, {"exl3_rcs": "nan"}, {"exl3_rcs": "inf"},
+                      {"exl3_mct": "abc"}):
+            with self.subTest(place=place), self.assertRaises(ValueError):
+                llm_exl3.build_cmd(self.main, self.rt, str(self.base), **self.kw(placement=place))
+
+    def test_lilicorr_discovery_matching_and_manual_command(self):
+        main = make_model(self.base, "Nemotron-3.5-Bolt-EXL3-2.5", arch="NemotronH_Omni_Reasoning_V3")
+        write_json(pathlib.Path(main) / "config.json", {"architectures": ["NemotronH_Omni_Reasoning_V3"],
+            "quantization_config": {"quant_method": "exl3"},
+            "llm_config": {"hidden_size": 4096, "vocab_size": 131072, "layers_block_type": ["moe"] * 88}})
+        draft = make_model(self.base, "Nemotron-3.5-Bolt-LiLiCorr", arch="LiLiCorrDraftModel", draft=True)
+        write_json(pathlib.Path(draft) / "config.json", {"architectures": ["LiLiCorrDraftModel"],
+            "quantization_config": {"quant_method": "modelopt_fp4"}, "block_size": 8,
+            "hidden_size": 4096, "vocab_size": 131072,
+            "dflash_config": {"target_layer_ids": [1, 18, 35, 51, 68, 85]}})
+        self.assertTrue(llm_exl3.is_lilicorr(draft))
+        self.assertFalse(llm_exl3.is_exl3(draft))
+        self.assertTrue(llm_exl3.draft_matches(main, draft))
+        self.assertFalse(llm_exl3.draft_matches(self.main, draft))
+        self.assertEqual(llm_exl3.draft_block(draft), 8)
+        self.assertIn(draft, [p for _, p, _ in llm_exl3.list_models(str(self.base), draft=True)])
+        self.assertNotIn(draft, [p for _, p, _ in llm_exl3.list_models(str(self.base))])
+        self.assertIsNone(llm_exl3.guess_draft(main, str(self.base)))
+        rt = make_runtime(self.base, archs=("NemotronH_Omni_Reasoning_V3",))
+        cmd, note = llm_exl3.build_cmd(main, rt, str(self.base),
+            **self.kw(speculative=True, drafter=draft, draft_max="7", placement={"exl3_mcl": "26"}))
+        self.assertEqual(cmd[cmd.index("-dm") + 1], draft)
+        self.assertEqual(cmd[cmd.index("-ndt") + 1], "7")
+        self.assertEqual(cmd[cmd.index("-mcl") + 1], "26")
+
     def test_reason_table_covers_skip_list(self):
         self.assertNotIn("sdnmax", llm_exl3.NA_REASONS)
         self.assertNotIn("ctx", llm_exl3.NA_REASONS)
@@ -265,6 +317,16 @@ class Exl3UiTests(unittest.TestCase):
         self.assertIn("drym", app._spec_note)
         self.assertIn("思考預算", app._spec_note)
         self.assertFalse(app._forced_fa)
+
+    def test_dram_placement_from_ui(self):
+        app = self.make_app()
+        app.adv.update({k: Var(v) for k, v in {"exl3_mcl": "22", "exl3_mct": "6",
+                        "exl3_chunk": "512", "exl3_rcs": "0.25", "exl3_embd": "1"}.items()})
+        cmd = app.build_cmd()
+        self.assertEqual(cmd[cmd.index("-mcl") + 1], "22")
+        self.assertEqual(cmd[cmd.index("-mct") + 1], "6")
+        self.assertIn("-embd", cmd)
+        self.assertNotIn("-ncmoe", cmd)
 
     def test_draft_max_from_ui(self):
         app = self.make_app()
