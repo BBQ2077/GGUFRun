@@ -397,5 +397,63 @@ class Exl3UiTests(unittest.TestCase):
         self.assertEqual(app.build_cmd()[app.build_cmd().index("--vision") + 1], "ram")
 
 
+class AccelTnTest(unittest.TestCase):
+    """--gemv-wmma-tn: blank/1 adds nothing, 2/4 pass through, anything else is rejected; old runtime skips it."""
+
+    def runtime(self, tmp, with_flag):
+        text = "parser.add_argument('--gemv-wmma', choices=['0', '1'])\n"
+        if with_flag:
+            text += "parser.add_argument('--gemv-wmma-tn', choices=['1', '2', '4'])\n"
+        pathlib.Path(tmp, "server.py").write_text(text, encoding="utf-8")
+        return tmp
+
+    def test_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rt = self.runtime(tmp, True)
+            for value, expect in (("", []), ("1", []), ("2", ["--gemv-wmma-tn", "2"]), ("4", ["--gemv-wmma-tn", "4"])):
+                cmd = []
+                llm_exl3._accel_args(cmd, rt, {"exl3_tn": value})
+                self.assertEqual(cmd, expect, value)
+            with self.assertRaises(ValueError):
+                llm_exl3._accel_args([], rt, {"exl3_tn": "3"})
+
+    def test_old_runtime_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = []
+            note = llm_exl3._accel_args(cmd, self.runtime(tmp, False), {"exl3_tn": "2"})
+            self.assertEqual(cmd, [])
+            self.assertIn("--gemv-wmma-tn", note)
+
+
+class AccelAutoDraftAcceptTest(unittest.TestCase):
+    """--auto-draft-accept: only with a draft model, wins over --auto-draft, old runtime skips it."""
+
+    def runtime(self, tmp, with_flag):
+        text = "parser.add_argument('--auto-draft', action='store_true')\n"
+        if with_flag:
+            text += "parser.add_argument('--auto-draft-accept', action='store_true')\n"
+        pathlib.Path(tmp, "server.py").write_text(text, encoding="utf-8")
+        return tmp
+
+    def test_with_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rt = self.runtime(tmp, True)
+            cmd = ["-dm", "x"]
+            llm_exl3._accel_args(cmd, rt, {"exl3_autodraft_acc": True, "exl3_autodraft": True})
+            self.assertEqual(cmd, ["-dm", "x", "--auto-draft-accept"])
+
+    def test_without_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = []
+            llm_exl3._accel_args(cmd, self.runtime(tmp, True), {"exl3_autodraft_acc": True})
+            self.assertEqual(cmd, [])
+
+    def test_old_runtime_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd = ["-dm", "x"]
+            llm_exl3._accel_args(cmd, self.runtime(tmp, False), {"exl3_autodraft_acc": True})
+            self.assertEqual(cmd, ["-dm", "x"])
+
+
 if __name__ == "__main__":
     unittest.main()

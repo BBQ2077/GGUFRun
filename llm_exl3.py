@@ -172,7 +172,7 @@ def runtime_features(runtime):
             text = f.read()
     except OSError:
         return set()
-    feats = {flag for flag in ("--auto-draft", "--gemv-wmma", "--gemv-max-m", "--gemv-wmma-tn", "--dflash2-host-cb",
+    feats = {flag for flag in ("--auto-draft", "--auto-draft-accept", "--gemv-wmma", "--gemv-max-m", "--gemv-wmma-tn", "--dflash2-host-cb",
                                "--qc-staging-sliced") if f"'{flag}'" in text}
     if "cpu_cache_size=int(" in text:
         feats.add("-ccs")
@@ -272,8 +272,8 @@ def vram_check(main, runtime, ctx, parallel, ctk="q4_0", ctv="q4_0", draft=""):
         return 0, 0, ""
     gpu = (weight_bytes(main)[0] or 0) - vision_bytes(main)
     dw = weight_bytes(draft)[0] if draft and draft != "-" and os.path.isdir(draft) else 0
-    bits = max(KV_BITS.get(ctk, 4), KV_BITS.get(ctv, 4))
-    kv = kv_bytes_per_token(main, bits) * ctx * parallel
+    kb, vb = KV_BITS.get(ctk, 4), KV_BITS.get(ctv, 4)
+    kv = (kv_bytes_per_token(main, kb) + kv_bytes_per_token(main, vb)) // 2 * ctx * parallel
     slots = VRAM_PER_SLOT * parallel
     total = gpu + dw + kv + slots
     vram = capabilities(runtime).get("gpu_total_bytes") or 16 * 2 ** 30 if runtime else 16 * 2 ** 30
@@ -313,7 +313,7 @@ def draft_block(draft):
 
 
 # ---------- 啟動指令 ----------
-KV_BITS = {"f16": 16, "q8_0": 8, "q4_0": 4}
+KV_BITS = {"f16": 16, "q8_0": 8, "q4_0": 4, "q3": 3, "q2": 2}   # q3／q2 只有 EXL3 能用（-cq 3、-cq 4,2）
 RECURRENT_CACHE_GB = 4.0   # 多輪對話接續用的遞迴狀態檢查點（系統 RAM）
 CHUNK_SIZE = 2048          # 讀提示詞時每次送進 GPU 的 token 數（65536＋q4 實測：512→1030、2048→1186 tok/s，+0.6 GiB）
 CHUNK_SIZE_DRAFT = 1024    # 開草稿時草稿模型另佔約 1 GiB，chunk 降一級留顯存餘裕
@@ -370,6 +370,11 @@ ACCEL_FIELDS = (
      "只在 DSpark（投機解碼）模式有效。依「目前同時生成幾路」分別實測每種草稿長度的速度，自動挑最快的\n"
      "（範圍 0 ～ 草稿長度上限；0＝暫停打草稿，草稿模型照樣跟上進度，隨時可恢復）；要快 5% 以上才換，並定期重測。\n"
      "實測（2.20bpw、temp 0.7）：1～4 路開草稿明顯較快，8 路不開草稿較快；開這個就不用手動切換。"),
+    ("exl3_autodraft_acc", "自動草稿（猜中率） (--auto-draft-accept)", "check",
+     "只在 DSpark（投機解碼）模式有效。每一輪看「最近第 1、2、3…個草稿各猜中幾成」，再配上各路數實測的每輪耗時，\n"
+     "挑每秒產出最多的草稿長度（0 ～ 草稿長度上限）。猜中率跟著內容走：寫程式／SVG 自動拉長，寫文章自動縮短，換題幾輪內就跟上。\n"
+     "像排隊點餐：店員看最近客人點到第幾道就停，決定一次先備幾道。統計只在 CPU 做幾個加法，不佔 GPU。\n"
+     "實測（2.20bpw、64K、KV 4,2）：1 路自動用 7、3 路自動用 4，速度跟手動挑最佳值相差 2% 內。勾了這個就不用再勾上一項。"),
     ("exl3_hdt", "重複內容長草稿 (-hdt)", "entry",
      "n-gram 補草稿的一種。當輸出跟前文「一字不差地重複」時（例：改程式碼時把整段原樣抄回、複述文件、\n"
      "照模板填表），直接把前文接下來那一段當草稿一次驗證，命中就一口氣前進很多字。\n"
@@ -402,6 +407,7 @@ ACCEL_SHORT = {
     "exl3_m32": "預設 64 列；勾選＝逐字一致優先，速度較慢。",
     "exl3_tn": "留空＝原做法；填 2／4＝輸入共用（實驗）。",
     "exl3_autodraft": "依目前路數自動挑最快的草稿長度，路數多時自動暫停草稿（只在 DSpark）。",
+    "exl3_autodraft_acc": "依最近猜中率每輪挑草稿長度，換內容幾輪內跟上（只在 DSpark）。",
     "exl3_hdt": "輸出照抄前文時一次猜一大段；建議 16～32，留空＝關。",
     "exl3_ngram": "不用草稿模型、從前文找相同片段猜；只在 Normal 模式。",
     "exl3_ccs": "前文存 RAM，重複的長提示不用重讀；建議 4～8，留空＝關。",
@@ -524,7 +530,7 @@ def build_cmd(main, runtime, base, *, port, ctx, ctk, ctv, think, effort, specul
     if ctx < 256 or ctx % 256:
         raise ValueError("EXL3 的 Context 必須 ≥ 256 且為 256 的倍數（例：32768）")
     if ctk not in KV_BITS or ctv not in KV_BITS:
-        raise ValueError("KV 型別只支援 f16 / q8_0 / q4_0")
+        raise ValueError("KV 型別只支援 f16 / q8_0 / q4_0 / q3 / q2")
     cmd = [os.path.join(runtime, "python", "python.exe"), "-I", "-X", "utf8", "-u",
            os.path.join(runtime, "runtime.py"), "script", "server.py",
            "-m", main, "--alias", os.path.basename(main), "--host", "127.0.0.1", "--port", str(port),
@@ -635,7 +641,13 @@ def _accel_args(cmd, runtime, accel):
         note += ("[EXL3] 多列快路徑：" + ("關" if on("exl3_no_wmma") else
                  f"開（一次最多 {32 if on('exl3_m32') else 64} 列）") + "\n")
     drafting = "-dm" in cmd
-    if on("exl3_autodraft"):
+    if on("exl3_autodraft_acc"):
+        if drafting:
+            if add("--auto-draft-accept"):
+                note += "[EXL3] 自動草稿（猜中率）：開（依最近各位置猜中率與每輪耗時，每輪挑草稿長度）\n"
+        else:
+            note += "[EXL3] 自動草稿（猜中率）：沒有載入草稿模型，略過\n"
+    elif on("exl3_autodraft"):
         if drafting:
             if add("--auto-draft"):
                 note += "[EXL3] 自動草稿長度：開（依同時生成路數分別實測，自動挑最快的長度）\n"

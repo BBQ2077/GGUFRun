@@ -833,6 +833,10 @@ def bind_numeric_tree(widget):
         bind_numeric_tree(ch)
 
 
+KV_GGUF = ["f16", "q8_0", "q4_0"]
+KV_EXL3 = KV_GGUF + ["q3", "q2"]   # EXL3 的 -cq 吃 2～8 位元，K／V 可分開
+
+
 class Tip:
     """滑鼠移到控件上時顯示一行簡短說明"""
 
@@ -1155,12 +1159,14 @@ class App:
         kvf.grid(row=0, column=1, sticky="w")
         self.ctk = tk.StringVar(value="q4_0")
         self.ctv = tk.StringVar(value="q4_0")
-        ttk.Combobox(kvf, textvariable=self.ctk, width=6, state="readonly",
-                     values=["f16", "q8_0", "q4_0"]).pack(side="left")
-        ttk.Label(kvf, text="/").pack(side="left", padx=4)
-        ttk.Combobox(kvf, textvariable=self.ctv, width=6, state="readonly",
-                     values=["f16", "q8_0", "q4_0"]).pack(side="left")
-        ttk.Label(cfg, text="KV 快取壓縮格式：q4_0 最省、f16 最精確",
+        self._kv_boxes = []
+        for _i, _var in enumerate((self.ctk, self.ctv)):
+            if _i:
+                ttk.Label(kvf, text="/").pack(side="left", padx=4)
+            _cb = ttk.Combobox(kvf, textvariable=_var, width=6, state="readonly", values=KV_GGUF)
+            _cb.pack(side="left")
+            self._kv_boxes.append(_cb)
+        ttk.Label(cfg, text="KV 快取壓縮格式：q4_0 最省、f16 最精確；EXL3 另有 q3／q2（例：K q4_0＋V q2）",
                   foreground="#666").grid(row=0, column=2, sticky="w", padx=6)
 
         # --- 進階取樣參數變數（本區的 MoE 欄位與「⚙ 進階取樣設定」視窗共用同一個 dict）---
@@ -1594,7 +1600,7 @@ class App:
                 parts.append(f"{flag} {val}")
         if self.adv.get("exl3_embd") is not None and self.adv["exl3_embd"].get():
             parts.append("-embd")
-        _labels = {"exl3_no_wmma": "關快路徑", "exl3_m32": "32列", "exl3_autodraft": "自動草稿",
+        _labels = {"exl3_no_wmma": "關快路徑", "exl3_m32": "32列", "exl3_tn": "TN", "exl3_autodraft": "自動草稿", "exl3_autodraft_acc": "猜中率草稿",
                    "exl3_hdt": "-hdt", "exl3_ngram": "-ngram", "exl3_ccs": "-ccs", "exl3_dcd": "SSD快取",
                    "exl3_dcs": "-dcs", "exl3_hostcb": "#490", "exl3_qcslice": "#517"}
         for key, tag in _labels.items():
@@ -1943,6 +1949,15 @@ class App:
             exl3 = self.is_exl3()
         except Exception:
             exl3 = False
+        for _cb in getattr(self, "_kv_boxes", ()):
+            try:
+                _cb.configure(values=KV_EXL3 if exl3 else KV_GGUF)
+            except tk.TclError:
+                pass
+        if not exl3:
+            for _var in (self.ctk, self.ctv):
+                if _var.get() not in KV_GGUF:
+                    _var.set("q4_0")
         alive = []
         for item in (only if only is not None else self._engine_widgets):
             key, widget, tip, state = item
