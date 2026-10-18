@@ -1955,8 +1955,9 @@ class App:
             except tk.TclError:
                 pass
         if not exl3:
-            for _var in (self.ctk, self.ctv):
-                if _var.get() not in KV_GGUF:
+            # 啟動時 _sync_model() 會在 KV 欄位（ctk/ctv）建立前先跑一次；那時跳過即可（預設就是 q4_0）。
+            for _var in (getattr(self, "ctk", None), getattr(self, "ctv", None)):
+                if _var is not None and _var.get() not in KV_GGUF:
                     _var.set("q4_0")
         alive = []
         for item in (only if only is not None else self._engine_widgets):

@@ -22,7 +22,7 @@ class RocmSdkSelectionTests(unittest.TestCase):
         exe = BASE / 'RUNTIMES' / ui.ROCM_10_RUNTIME / 'sd-server.exe'
         repair = BASE / ui.ROCM_PACKAGES
         old = str(repair / 'packages/_rocm_sdk_core/bin')
-        new = str(repair / 'packages-10.1.0/_rocm_sdk_libraries/bin')
+        new = str(BASE / ui.ROCM_10_SDK / 'bin')
         original = {'PATH': os.pathsep.join((old, 'C:/Windows/System32')),
                     'ROCBLAS_TENSILE_LIBPATH': str(repair / 'packages/old-data')}
         with mock.patch.dict(os.environ, original, clear=True):
@@ -47,19 +47,24 @@ class RocmSdkSelectionTests(unittest.TestCase):
     def test_manifest_validates_hashes(self):
         with tempfile.TemporaryDirectory(dir=TMP) as folder:
             base = Path(folder)
-            repair = base / ui.ROCM_PACKAGES
-            repair.mkdir(parents=True)
+            sdk = base / ui.ROCM_10_SDK
+            library = sdk / 'bin/hipblas.dll'
             core = base / 'RUNTIMES' / ui.ROCM_10_RUNTIME / 'amdhip64_7.dll'
-            core.parent.mkdir(parents=True)
-            core.write_bytes(b'test fixture')
-            relative = core.relative_to(base).as_posix()
-            manifest = {'sdk_version': '10.1.0', 'files': {relative: hashlib.sha256(core.read_bytes()).hexdigest()}}
-            (repair / 'rocm-10.1-manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+            for file, manifest_name in ((core, 'rocm-runtime.json'), (library, 'sdk-manifest.json')):
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b'test fixture')
+                relative = file.relative_to(base).as_posix()
+                manifest = {'sdk_version': '10.1.0',
+                            'files': {relative: hashlib.sha256(file.read_bytes()).hexdigest()}}
+                root = core.parent if file == core else sdk
+                (root / manifest_name).write_text(json.dumps(manifest), encoding='utf-8')
             with mock.patch.object(ui, 'BASE', base):
                 self.assertIn('10.1.0', ui.local_rocm_launch_note(core.parent / 'sd-server.exe'))
-                core.write_bytes(b'changed fixture')
-                with self.assertRaisesRegex(RuntimeError, 'SHA256'):
-                    ui.local_rocm_launch_note(core.parent / 'sd-server.exe')
+                for file in (core, library):
+                    file.write_bytes(b'changed fixture')
+                    with self.assertRaisesRegex(RuntimeError, 'SHA256'):
+                        ui.local_rocm_launch_note(core.parent / 'sd-server.exe')
+                    file.write_bytes(b'test fixture')
 
     def test_both_launch_paths_use_sdk_environment(self):
         for method in (ui.ImageApp.start, ui.ImageApp.finish_switch):

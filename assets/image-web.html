@@ -16,12 +16,13 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 .queue-actions{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.queue-actions button{flex:1}.tasklist{list-style:none;padding:0;margin:12px 0;max-height:460px;overflow:auto}.tasklist li{border:1px solid #344f6b;border-radius:9px;padding:12px;margin:9px 0;overflow-wrap:anywhere}.task-head{display:flex;justify-content:space-between;gap:8px}.task-buttons{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}.task-buttons button,.queue-actions .secondary{background:#284766;color:#e8f3ff;padding:6px 10px;font-size:13px}.task-buttons button:hover,.queue-actions .secondary:hover{background:#3a668a}.task-summary{color:#9fb5cc;font-size:13px;line-height:1.5}.task-error{color:#ffc6b4}#bulk{height:92px}.task-refs{display:flex;flex-wrap:wrap;gap:9px;margin:9px 0}.task-ref{display:grid;gap:3px;font-size:12px;color:#bcd0e7}.task-ref img{width:76px;height:76px;object-fit:cover;border:1px solid #426080;border-radius:6px}.source-preview{max-width:100%;max-height:210px;object-fit:contain;border-radius:8px;margin:8px 0;display:block}.source-preview[hidden],.source-fields[hidden],#hires-fields[hidden],#edit-references[hidden],#source-single[hidden]{display:none}.edit-list{display:grid;gap:7px;margin:10px 0}.edit-item{display:flex;align-items:center;gap:10px;background:#0b192d;border:1px solid #426080;border-radius:9px;padding:7px}.edit-item img{width:56px;height:56px;object-fit:cover;border-radius:5px}.edit-item span{flex:1;overflow-wrap:anywhere}.edit-item button,#clear-edit{background:#284766;color:#e8f3ff;padding:7px 11px;font-size:13px}
 .lora-list{display:grid;gap:7px;margin:10px 0}.lora-item{display:flex;align-items:center;gap:10px;background:#0b192d;border:1px solid #426080;border-radius:9px;padding:7px}.lora-item label{display:flex;align-items:center;gap:7px;margin:0;flex:1;overflow-wrap:anywhere}.lora-item input[type="number"]{width:100px}
 @media(max-width:990px){.grid{grid-template-columns:1fr}.guidegrid{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+.tpl-bar{border:1px solid rgba(127,127,127,.35);border-radius:12px;padding:10px 12px;margin:0 0 14px}.tpl-row,.sigma-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.tpl-row select{flex:1;min-width:220px;width:auto}.tpl-row button,.sigma-row button{padding:8px 12px}.sigma-row input{flex:1;min-width:240px}#tpl-state.dirty{color:#c60;font-weight:650}input[readonly]{opacity:.7}
 </style>
 </head>
 <body><main class="shell">
 <header><div><h1>GGUFRun · 生圖</h1><p class="sub">本機 stable-diffusion.cpp｜繁體中文操作頁</p></div><span id="model" class="chip">正在查詢已載入模型…</span></header>
 <div class="grid"><section><h2>建立圖片</h2>
-<form id="form"><label for="mode">生成模式</label><select id="mode"><option value="txt2img">文字生圖（不載入 mmproj）</option><option value="img2img">Img2Img（整張去噪重畫，不載入 mmproj）</option><option value="qwen_edit">Qwen Edit（參考圖指令修圖，按需載入 mmproj）</option></select><p class="help">離開 Qwen Edit、選擇「文字生圖」或「Img2Img」，就會重啟 Image Server 並卸載 mmproj；沒有另一個卸載步驟。任務生成中不可切換。請勿在其他分頁或外部 API 並行送出任務。待辦佇列和已存圖不會刪除。</p>
+<form id="form" autocomplete="off"><div class="tpl-bar"><label for="tpl">參數模板</label><div class="tpl-row"><select id="tpl"></select><button id="tpl-save" type="button">💾 儲存</button><button id="tpl-save-as" class="secondary" type="button">另存模板</button><button id="tpl-delete" class="secondary" type="button">刪除模板</button></div><p id="tpl-state" class="help"></p><p class="help">改參數只影響這次測試，不會自動保存；按「💾 儲存」才寫入這台瀏覽器，下次開頁才會還原。選內建模板只是把數值填進表單，一樣要按儲存才保留。選到自訂模板時，「💾 儲存」也會一併更新該模板。</p></div><label for="mode">生成模式</label><select id="mode"><option value="txt2img">文字生圖（不載入 mmproj）</option><option value="img2img">Img2Img（整張去噪重畫，不載入 mmproj）</option><option value="qwen_edit">Qwen Edit（參考圖指令修圖，按需載入 mmproj）</option></select><p class="help">離開 Qwen Edit、選擇「文字生圖」或「Img2Img」，就會重啟 Image Server 並卸載 mmproj；沒有另一個卸載步驟。任務生成中不可切換。請勿在其他分頁或外部 API 並行送出任務。待辦佇列和已存圖不會刪除。</p>
 <div id="source-fields" class="source-fields" hidden><div id="source-single"><label for="source-file">上傳原圖（PNG／JPEG，最多 10 MB）</label><input id="source-file" type="file" accept="image/png,image/jpeg"><img id="source-preview" class="source-preview" alt="原圖預覽" hidden></div><div id="edit-references" hidden><label for="edit-files">Qwen Edit 參考圖（可分次加入，依顯示順序送出，最多 10 張）</label><input id="edit-files" type="file" accept="image/png,image/jpeg" multiple><div id="edit-list" class="edit-list"></div><button id="clear-edit" type="button" class="secondary">清空參考圖</button><p class="help">每張都可個別移除，用 ↑↓ 調整參考圖順序；選錯圖不會送出。待辦任務另會顯示已排入的參考圖預覽。更多參考圖可能增加記憶體需求。</p></div><p id="source-info" class="help">原圖暫存在此瀏覽器，供佇列重開後使用；不會複製到 image-output。改選原圖不會改動已加入的任務。</p><div id="denoise-fields"><label for="denoising-strength">改動強度（Denoising strength） <span class="info"><button class="hint" type="button" aria-label="說明：denoising-strength">?</button><span class="hinttext" role="tooltip">0 越接近原圖，1 改動越大。建議先用 0.5～0.7 試；這是傳統圖生圖的去噪強度，不等於 Qwen 官方參考圖編輯的指令強度。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</span></span></label><input id="denoising-strength" type="number" min="0" max="1" step="0.01" value="0.65"><div id="mask-fields"><label for="mask-file">局部重畫遮罩（選填；PNG，白色改、黑色保留）</label><input id="mask-file" type="file" accept="image/png"><p class="help">遮罩需與原圖相同像素尺寸；留空就是普通去噪圖生圖。Qwen Edit 不使用遮罩。</p></div><p class="help">普通去噪圖生圖可不填描述；本版 sd-server 要求非空 prompt，留空時將送出中性文字 <code>the same image</code>（不是 Qwen 修改指令）。來源圖與輸出尺寸不同時，後端可能縮放或裁切。</p></div><p id="edit-help" class="help" hidden>Qwen Edit：參考圖由視覺編碼器理解後依指令編輯；不使用去噪強度。提示詞請描述要改什麼（例如「只把裙子改成黑色」）。不是像素級保證，背景仍可能變化。</p></div>
 <label for="prompt">畫面描述（Prompt） <span class="info"><button class="hint" type="button" aria-label="說明：prompt">?</button><span class="hinttext" role="tooltip">寫出你希望畫面包含的主體、場景、光線、風格與構圖。例如「白桌上一顆紅蘋果，窗邊自然光，寫實攝影」。模型對語言的理解不盡相同；加入佇列時會保存這段文字，不會因之後改輸入框而變動。</span></span></label><textarea id="prompt" placeholder="例如：白色桌上的一顆紅蘋果，自然窗光，寫實攝影" required></textarea>
 <label for="negative">不希望出現的內容（選填） <span class="info"><button class="hint" type="button" aria-label="說明：negative">?</button><span class="hinttext" role="tooltip">負面描述，告訴模型盡量避免哪些畫面元素，例如模糊或文字。不是所有模型都以相同方式支援；不確定時先留空。它不會刪除已生成圖片中的東西。</span></span></label><input id="negative" placeholder="依模型而異；不需要可留空">
@@ -30,8 +31,8 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 <details id="hires-fields"><summary>進階設定：Hi-res 高解析度（文字生圖＋圖生圖）</summary><label><input id="enable-hr" type="checkbox"> <span id="hr-label">啟用 Hi-res：先放大再做第二輪去噪</span></label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率</label><select id="hr-scale" disabled><option value="1">1×（同尺寸升畫質）</option><option value="1.5">1.5×</option><option value="2" selected>2×</option><option value="3">3×</option><option value="4">4×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div><div><label><input id="hr-turbo-sigma" type="checkbox" disabled> <span id="hr-turbo-label">第二輪沿用第一輪 turbo sigma</span></label></div></div><p class="help" id="upscaler-note"></p><p class="help" id="hr-help"></p></details>
 <div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；1 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="1" required></div>
 <div><label for="seed">隨機種子 <span class="info"><button class="hint" type="button" aria-label="說明：seed">?</button><span class="hinttext" role="tooltip">-1 代表送出前自動產生一個確定的隨機種子，方便寫入檔名和重現；重試同一筆會沿用種子。指定相同整數也仍需相同模型／參數，不保證跨環境完全一致。</span></span></label><input id="seed" type="number" min="-1" max="4294967295" step="1" value="-1" required></div><div><label for="sampler">取樣器 <span class="info"><button class="hint" type="button" aria-label="說明：sampler">?</button><span class="hinttext" role="tooltip">Euler 為此介面的預設。若當前模型／伺服器不提供 Euler，請改選可用的取樣器；以實際回傳清單為準。</span></span></label><select id="sampler"><option value="">模型預設</option><option value="Euler" selected>Euler（預設）</option></select></div></div>
-<label for="viggle">Viggle Qwen-Image-2.1 Turbo LoRA（選填）</label><select id="viggle"><option value="off" selected>關閉（原本模型）</option><option value="6step">Viggle Turbo · 步數自訂（僅 Qwen-Image-2.1）</option></select><p class="help">開啟時「取樣步數」預設 6，可自訂 4～150。作者列有 4 步訓練排程、5／6／7 步的高噪聲切分節點，以及密集文字用的 8 步排程（官方比較頁的 5 個密集文字範例即用 8 步）；5～8 步皆只細分最高噪聲區段、不動 0.875／0.75／0.5／0.25，9 步以上依同一原則推算，未經官方逐一測試，不保證更好。步數與 sigma 會一起送出，依輸出尺寸換算；固定 Euler、CFG 1（作者建議不使用 CFG），需本機 fused LoRA 權重，或直接載入作者轉好的 Viggle 融合 GGUF（此時開啟頁面會自動啟用並免掛 LoRA，避免重複套用）。可與 Hi-res 或去噪 Img2Img 併用；第二輪（Hi-res）預設由「第二輪步數＋去噪強度」自行推導排程，但在 Hi-res 區塊勾選「第二輪沿用第一輪 turbo sigma」後，該輪會用放大後尺寸與第二輪步數重算同一套 turbo sigma，讓放大階段也走 Viggle。此模型限非商業研究／評估。關閉不會套用 LoRA。</p><button id="release-lora" class="secondary" type="button" disabled>♻ 釋放 LoRA 記憶體（重啟 Image Server）</button><p id="lora-memory" class="help">LoRA 一旦被伺服器套用就會常駐在執行中的行程（量化權重走 at_runtime，實測多佔數 GB）；把上面選單切回「關閉」只是下一張任務不再套用，不會歸還記憶體。偵測到常駐 LoRA 時可按此鈕重啟 server 釋放；佇列與已存圖片不受影響，但需要重新載入模型。</p>
-<details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次，Viggle 的設定優先。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
+<label for="turbo">加速排程（Turbo／蒸餾模型）</label><select id="turbo"><option value="off" selected>一般（依步數自動排程）</option><option value="qwen-turbo">Qwen-Image-2.1-Turbo · 官方 8 步 sigma</option><option value="moss-4step">MOSS-Image-SFT-4-steps · data-space 4 步</option></select><div id="turbo-sigma-box" hidden><label for="turbo-sigmas">Turbo sigma（由大到小，逗號分隔；不含結尾 0；個數＝步數）</label><div class="sigma-row"><input id="turbo-sigmas" type="text" spellcheck="false" autocomplete="off"><button id="turbo-sigma-reset" class="secondary" type="button">還原官方</button></div></div><p id="turbo-help" class="help"></p><button id="release-lora" class="secondary" type="button" disabled>♻ 釋放 LoRA 記憶體（重啟 Image Server）</button><p id="lora-memory" class="help">LoRA 一旦被伺服器套用就會常駐在執行中的行程（量化權重走 at_runtime，實測多佔數 GB）；把上面選單切回「關閉」只是下一張任務不再套用，不會歸還記憶體。偵測到常駐 LoRA 時可按此鈕重啟 server 釋放；佇列與已存圖片不受影響，但需要重新載入模型。</p>
+<details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次。MOSS 4 步排程需要自己勾選「MOSS-Image-SFT-4-steps-lora」（強度 1）；不會自動掛。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
 <p id="sampler-warning" class="help"></p><p class="help">每次加入任務，都會固定當下的描述、尺寸、步數、CFG、種子與取樣器。要換模型請回控制窗停止並重啟 server；佇列中的任務不會因此自動改參數。</p>
 <button class="action" id="generate" type="submit">＋ 加入單張佇列</button></form>
 <label for="bulk">一次貼上多筆描述（一行一筆） <span class="info"><button class="hint" type="button" aria-label="說明：bulk">?</button><span class="hinttext" role="tooltip">例如貼上 10 行描述，按「批量加入」即可排入 10 張。每一行都使用此刻上方相同的尺寸、步數、CFG、種子等設定；空白行會忽略。不要在同一筆描述內換行。</span></span></label><textarea id="bulk" placeholder="第一張的描述&#10;第二張的描述&#10;第三張的描述"></textarea><button id="add-bulk" type="button">批量加入</button></section>
@@ -85,7 +86,7 @@ async function loadUpscalers(){
         const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.model_path?'（外部模型'+(item.scale?` ${item.scale}×`:'')+'）':'（內建）');$('hr-upscaler').append(option);}}
     catch(e){}
   }
-  upscalersReady=upscalersReady||reachable;
+  upscalersReady=upscalersReady||reachable;if(reachable)applyPending();
   $('upscaler-note').textContent=upscalersReady?'':'放大方法清單尚未取得（伺服器可能還在載入模型）；連線後會自動補上，目前只有內建方法可選。';
   return reachable;
 }
@@ -95,17 +96,18 @@ function retryUpscalers(){
 }
 async function discover(){
   try{const r=await fetch('/sdapi/v1/options');if(r.ok){const d=await r.json();const name=d.sd_model_checkpoint||'未命名模型';
-    if(/viggle/i.test(name)){fusedViggleModel=true;const sel=$('viggle');
-      if(sel.value!=='6step'){sel.value='6step';sel.dispatchEvent(new Event('change'));}
-      $('model').textContent='已載入 Viggle 融合模型：'+name+'（免掛 LoRA）';}
-    else $('model').textContent='已載入：'+name;}}
+    $('model').textContent='已載入：'+name;
+    const auto=/moss.*4.?step/i.test(name)?'moss-4step':(/qwen/i.test(name)&&/turbo/i.test(name)&&!/viggle/i.test(name))?'qwen-turbo':null;
+    if(auto&&$('turbo').value!==auto){const clean=!formIsDirty();applySnapshot(BUILTIN_TEMPLATES['builtin:'+auto].values);
+      renderTemplates('builtin:'+auto);if(clean){formBaseline=formSnapshot();autoTemplate=BUILTIN_TEMPLATES['builtin:'+auto].label;}updateDirty();
+      $('model').textContent+='（已依模型自動套用「'+BUILTIN_TEMPLATES['builtin:'+auto].label+'」）';}}}
   catch(e){$('model').textContent='模型狀態尚未就緒';}
   try{const r=await fetch('/sdapi/v1/samplers');if(r.ok){const list=await r.json();let chosen=null;for(const item of list){if(!item.name)continue;if(item.name.toLowerCase()==='euler'){chosen=item.name;continue;}const option=document.createElement('option');option.value=item.name;option.textContent=item.name;$('sampler').append(option);}
-    if(chosen){$('sampler').options[1].value=chosen;$('sampler').value=chosen;}else{$('sampler').options[1].remove();$('sampler').value='';$('sampler-warning').textContent='此伺服器沒有 Euler 取樣器，已切換模型預設；亦可手動選可用取樣器。';}}}catch(e){}
+    if(chosen){$('sampler').options[1].value=chosen;$('sampler').value=chosen;}else{$('sampler').options[1].remove();$('sampler').value='';$('sampler-warning').textContent='此伺服器沒有 Euler 取樣器，已切換模型預設；亦可手動選可用取樣器。';}applyPendingSampler();}}catch(e){}
   if(!await loadUpscalers())retryUpscalers();
   try{const r=await fetch('/sdapi/v1/loras');if(r.ok){const list=await r.json();loraCatalog=Array.isArray(list)?list.filter(item=>item&&item.path):[];}}
   catch(e){}
-  renderLoraCatalog();
+  renderLoraCatalog();applyPending();
 }
 const saveParams=new URLSearchParams(location.search);
 const savePort=Number(saveParams.get('save_port'));
@@ -119,8 +121,6 @@ function updateElapsed(){const task=queue.tasks.find(t=>t.status==='running');
     const clock=document.getElementById('time-'+task.id);if(clock)clock.textContent=' · 已耗時 '+time+phase;
   }else{$('elapsed').textContent=queue.lastDurationMs!=null?'上一張耗時 '+duration(queue.lastDurationMs):'尚未開始生圖';}}
 const unsavedImages=new Map();
-// The fused viggle GGUF already contains the turbo weights: adding the LoRA on top would apply them twice.
-let fusedViggleModel=false;
 let progressLabel=null,progressTimer=null,totalSteps=0,loraResident=false;
 async function pollProgress(){if(!saveBase||!progressTimer)return;
   try{const r=await fetch(saveBase+'/progress?steps='+totalSteps+'&token='+encodeURIComponent(saveToken),{cache:'no-store'});
@@ -173,27 +173,41 @@ async function ensureMode(mode){
   }
   throw Error('等待 Image Server 載入逾時；請檢查控制窗日誌');
 }
-/*VIGGLE_SCHEDULE_START*/
-function viggleSigmas(width,height,steps=6){
-  if(!Number.isInteger(width)||!Number.isInteger(height)||width<=0||height<=0||width%32||height%32)throw Error('Viggle 輸出尺寸需為 32 的倍數');
-  if(!Number.isInteger(steps)||steps<4||steps>150)throw Error('Viggle 取樣步數需為 4～150 的整數');
-  // Viggle raw_nodes: 4 is the training schedule; every extra step subdivides only the
-  // highest-noise segment and never moves 0.875, 0.75, 0.5, 0.25 (5 = v0.2 launch, 6 = default,
-  // 7 validated by the author). 8 is the author's dense-text schedule and follows the same rule.
-  const nodes=steps===4?[1,.75,.5,.25]:
-    Array.from({length:steps-3},(_,i)=>1-.125*i/(steps-4)).concat([.75,.5,.25]);
-  // QwenImage21 diffusers: mu=.5+(packed_image_tokens-256)*.4/(8192-256)
-  // FlowMatchEulerDiscreteScheduler time_shift: exp(mu)*t/(1-t+exp(mu)*t)
-  const mu=.5+((width/16)*(height/16)-256)*.4/(8192-256),shift=Math.exp(mu);
-  return nodes.map(t=>shift*t/(1-t+shift*t)).concat([0]);
+/*TURBO_SCHEDULE_START*/
+// Qwen/Qwen-Image-2.1-Turbo model_index.json "sample_sigmas" (diffusers PR #14950). The
+// scheduler has shift 1.0 and no dynamic shifting, so these are used as-is (resolution
+// independent) and the terminal 0 is appended. num_inference_steps alone does not override them.
+const QWEN_TURBO_SIGMAS=[1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568];
+// akhaliq/MOSS-Image-SFT-4-steps: LoRA stays unmerged (applied at runtime) and the server's
+// data-space sampler runs x = z + Q·x0 ; v = T(x, step_code) ; x0 = z - v (GGUFRun sd.cpp patch).
+const MOSS4_LORA='MOSS-Image-SFT-4-steps-lora.safetensors';
+const MOSS4_DATASPACE='IMAGE-MODELS/moss-4step/dataspace.safetensors';
+const MOSS4_STEPS=4;
+function parseTurboSigmas(text){
+  const values=String(text||'').split(/[\s,，、]+/).filter(Boolean).map(Number);
+  if(!values.length)throw Error('Turbo sigma 不可為空；按「還原官方」可填回 8 步官方值');
+  if(values.length>150)throw Error('Turbo sigma 最多 150 個');
+  for(let i=0;i<values.length;i++){const v=values[i];
+    if(!Number.isFinite(v)||v<=0||v>1)throw Error('Turbo sigma 每個值須大於 0 且不超過 1');
+    if(i&&v>=values[i-1])throw Error('Turbo sigma 須由大到小嚴格遞減');}
+  return values;
 }
-/*VIGGLE_SCHEDULE_END*/
-const VIGGLE_FUSED='Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors';
+function turboSigmas(){return parseTurboSigmas($('turbo-sigmas').value).concat([0]);}
+const TURBO_HELP={
+  off:'一般模型：步數與排程由伺服器依「取樣步數」自動產生。',
+  'qwen-turbo':'給 <b>Qwen-Image-2.1-Turbo</b>（例如 qwen-image-2.1-turbo-Q4_K_M.gguf）。官方把 8 步 sigma 存在 checkpoint 設定中：'
+    +'1.0 → 0.414568，shift 1.0、不做解析度位移，最後一步直接到 0；官方預設 CFG 1、Euler。只改「取樣步數」不會換排程，步數＝sigma 個數；'
+    +'想實驗可直接改 sigma 欄位（官方註明其他排程未經評估）。Hi-res 勾「第二輪沿用 turbo sigma」時，第二輪會用同一組 sigma 並依第二輪去噪強度截掉前段。文字生圖、Img2Img、Qwen Edit 皆可用。',
+  'moss-4step':'給 <b>MOSS-Image-SFT-4-steps</b>：控制窗載入 moss_image_sft_4step_int8_convrot ＋ moss4 runtime（b13a482-moss4）。'
+    +'選「MOSS-Image 4 步」模板會順便勾選 LoRA <b>MOSS-Image-SFT-4-steps-lora</b>（強度 1；伺服器在執行時套用、不合併），沒勾會很糊，要取消可自己在下方 LoRA 清單取消。送出時帶 dataspace 參數讓伺服器走官方 data-space 迴圈；固定 4 步、建議 CFG 1、不用負面提示。'
+    +'Img2Img 為<b>實驗性</b>：改動強度越低越貼近原圖構圖與光影，但文字與細節仍會被重畫（實測 0.1 只跑最後 1 個 step code，仍無法保留原字）。要忠實改圖請改用 Qwen-Image-2.1（Turbo）Img2Img／Qwen Edit。不支援 Qwen Edit。'
+};
+/*TURBO_SCHEDULE_END*/
 const LORA_MAX_STRENGTH=2;
 let loraCatalog=[];
 function loraLabel(entry){return entry.name||String(entry.path||'').replace(/\.[^.]+$/,'');}
 function loraStrength(raw,fallback){const value=Number(raw);return Number.isFinite(value)&&value>=0&&value<=LORA_MAX_STRENGTH?value:fallback;}
-function loraEntriesFromControls(includeViggle){
+function loraEntriesFromControls(){
   const entries=[],seen=new Set();
   const add=(path,multiplier)=>{if(!path||path==='off'||seen.has(path))return;
     seen.add(path);entries.push({path,multiplier});};
@@ -201,14 +215,12 @@ function loraEntriesFromControls(includeViggle){
     if(!item.querySelector('input[type="checkbox"]').checked)continue;
     add(item.dataset.path,loraStrength(item.querySelector('input[type="number"]').value,1));
   }
-  if(includeViggle&&!fusedViggleModel)add(VIGGLE_FUSED,1);
   return entries;
 }
 function renderLoraCatalog(){
   const list=$('lora-list');list.replaceChildren();
   for(const entry of loraCatalog){
     const path=String(entry.path||'');
-    if(path===VIGGLE_FUSED)continue;
 
     const row=document.createElement('div');row.className='lora-item';row.dataset.path=String(entry.path||'');
     const label=document.createElement('label'),check=document.createElement('input');
@@ -258,7 +270,8 @@ async function sendImage(body,task){
     if(body.seed===-1){body.seed=crypto.getRandomValues(new Uint32Array(1))[0];task.body.seed=body.seed;queue.notify();}
     await ensureMode(body.mode||'txt2img');
     startProgress(body.steps);
-    const {mode,sourceKey,sourceKeys,maskKey,viggleTurbo,offload:legacyOffload,...requestBody}=body;
+    const {mode,sourceKey,sourceKeys,maskKey,viggleTurbo,turbo,turboSigmas:sigmaList,offload:legacyOffload,...requestBody}=body;
+    if(viggleTurbo)throw Error('這筆是舊的 Viggle Turbo 任務（已移除）；請刪除後改用「Qwen-Image-2.1-Turbo 官方 8 步」重新加入');
     let response;
     if(mode==='qwen_edit'){
       const keys=Array.isArray(sourceKeys)?sourceKeys:sourceKey?[sourceKey]:[];
@@ -271,12 +284,13 @@ async function sendImage(body,task){
       }
       const sample_params={sample_steps:body.steps,guidance:{txt_cfg:body.cfg_scale}};
       if(body.sampler_name)sample_params.sample_method=body.sampler_name.toLowerCase().replace(/\s+/g,'_');
+      if(turbo==='qwen-turbo'){sample_params.sample_steps=sigmaList.length-1;sample_params.sample_method='euler';sample_params.custom_sigmas=sigmaList;}
       const native={prompt:body.prompt,negative_prompt:body.negative_prompt||'',width:body.width,height:body.height,
         seed:body.seed,batch_count:1,init_image:null,ref_images:refs,sample_params,output_format:'png'};
-      const loras=[...(Array.isArray(body.lora)?body.lora:[])].filter(item=>item.path!==VIGGLE_FUSED);
+      const loras=[...(Array.isArray(body.lora)?body.lora:[])];
       if(loras.length)native.lora=loras;
       image=await submitNative(native,'原生修圖');
-    }else if(viggleTurbo||(mode==='img2img'&&body.hrNative)){
+    }else if(turbo||(mode==='img2img'&&body.hrNative)){
       // Native path carries the selected turbo sigmas and/or the Hi-res block; sdapi cannot
       // express either one (img2img drops enable_hr, and custom_sigmas is only a native option).
       let initImage=null;
@@ -289,9 +303,11 @@ async function sendImage(body,task){
       }
       const sample_params={sample_steps:body.steps,guidance:{txt_cfg:body.cfg_scale}};
       if(body.sampler_name)sample_params.sample_method=body.sampler_name.toLowerCase().replace(/\s+/g,'_');
-      if(viggleTurbo){
-        sample_params.sample_steps=body.steps;sample_params.sample_method='euler';
-        sample_params.guidance={txt_cfg:1};sample_params.custom_sigmas=viggleSigmas(body.width,body.height,body.steps);
+      if(turbo==='qwen-turbo'){
+        sample_params.sample_steps=sigmaList.length-1;sample_params.sample_method='euler';sample_params.custom_sigmas=sigmaList;
+      }else if(turbo==='moss-4step'){
+        sample_params.sample_steps=MOSS4_STEPS;sample_params.sample_method='euler';
+        sample_params.extra_sample_args='dataspace='+MOSS4_DATASPACE;
       }
       const native={prompt:body.prompt||(mode==='img2img'?'the same image':''),negative_prompt:body.negative_prompt||'',
         width:body.width,height:body.height,seed:body.seed,batch_count:1,init_image:initImage,
@@ -300,14 +316,12 @@ async function sendImage(body,task){
       if(body.hrNative||body.enable_hr){
         native.hires={enabled:true,upscaler:body.hr_upscaler,scale:body.hr_scale,target_width:body.hr_resize_x,
           target_height:body.hr_resize_y,steps:body.hr_steps,denoising_strength:body.hr_denoising_strength};
-        // 沿用 turbo sigma：第二輪用放大後的尺寸與第二輪步數重算排程，讓放大階段也走 Viggle。
-        if(viggleTurbo&&body.hrTurboSigma)
-          native.hires.custom_sigmas=viggleSigmas(body.hr_resize_x,body.hr_resize_y,body.hr_steps);
+        // 沿用 turbo sigma：第二輪用同一組官方 sigma，伺服器依第二輪去噪強度截掉高噪聲前段。
+        if(turbo==='qwen-turbo'&&body.hrTurboSigma)native.hires.custom_sigmas=sigmaList;
       }
-      const loras=[...(Array.isArray(body.lora)?body.lora:[])].filter(item=>item.path!==VIGGLE_FUSED);
-      if(viggleTurbo&&!fusedViggleModel)loras.push({path:VIGGLE_FUSED,multiplier:1});
+      const loras=[...(Array.isArray(body.lora)?body.lora:[])];
       if(loras.length)native.lora=loras;
-      image=await submitNative(native,viggleTurbo?'原生 '+body.steps+' 步任務':'原生圖生圖 Hi-res');
+      image=await submitNative(native,turbo==='moss-4step'?'MOSS 4 步任務':turbo?'Turbo '+(sigmaList.length-1)+' 步任務':'原生圖生圖 Hi-res');
     }else{
       const endpoint=mode==='img2img'?'/sdapi/v1/img2img':'/sdapi/v1/txt2img';
       if(!Array.isArray(requestBody.lora)||!requestBody.lora.length)delete requestBody.lora;
@@ -322,7 +336,7 @@ async function sendImage(body,task){
       }
       response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody)});
     }
-    if(mode!=='qwen_edit'&&!viggleTurbo&&!body.hrNative){
+    if(mode!=='qwen_edit'&&!turbo&&!body.hrNative){
       if(!response.ok)throw Error('生圖伺服器回應 '+response.status+'：'+(await response.text()).slice(0,400));
       const data=await response.json();image=data.images?.[0];
     }
@@ -332,11 +346,11 @@ async function sendImage(body,task){
   stopProgress();
   const [pngWidth,pngHeight]=pngDimensions(image);
   let saveResponse;
-  try{saveResponse=await fetch(saveBase+'/save',{method:'POST',headers:{'Content-Type':'application/json','X-GGUFRun-Token':saveToken},body:JSON.stringify({image,task_id:task.id,width:pngWidth,height:pngHeight,steps:body.steps,cfg_scale:body.cfg_scale,seed:body.seed,sampler:body.sampler_name||'default',mode:body.mode||'txt2img',denoising_strength:body.denoising_strength,viggle:Boolean(body.viggleTurbo),duration_ms:Math.min(43200000,Math.max(0,Date.now()-task.startedAt))})});}
+  try{saveResponse=await fetch(saveBase+'/save',{method:'POST',headers:{'Content-Type':'application/json','X-GGUFRun-Token':saveToken},body:JSON.stringify({image,task_id:task.id,width:pngWidth,height:pngHeight,steps:body.steps,cfg_scale:body.cfg_scale,seed:body.seed,sampler:body.sampler_name||'default',mode:body.mode||'txt2img',denoising_strength:body.denoising_strength,turbo:body.turbo||'',duration_ms:Math.min(43200000,Math.max(0,Date.now()-task.startedAt))})});}
   catch(e){throw Error('無法連接本機存圖服務；本頁仍保留這張圖片，按重試會先嘗試保存，不會重新生圖');}
   const saved=await saveResponse.json();if(!saveResponse.ok||!saved.filename)throw Error('自動保存失敗：'+(saved.error||saveResponse.status)+'；按重試會先嘗試保存');
   task.file=saved.filename;unsavedImages.delete(task.id);
-  if(body.viggleTurbo||(Array.isArray(body.lora)&&body.lora.length))refreshLoraState().catch(()=>{});
+  if(Array.isArray(body.lora)&&body.lora.length)refreshLoraState().catch(()=>{});
   showImage(task.file);$('status').textContent='圖片已自動保存；將依序繼續。';
   return {saved:true};
 }
@@ -430,6 +444,7 @@ function renderQueue(){const list=$('tasklist');list.replaceChildren();
   $('run-queue').disabled=queue.running||!counts.pending;
   updateElapsed();
 }
+let draftWarning='';
 function draftBody(){
   for(const id of ['width','height','steps','cfg','seed'])if(!$(id).checkValidity())throw Error('請檢查 '+id+' 欄位的數值');
   const body={prompt:$('prompt').value.trim(),negative_prompt:$('negative').value,width:Number($('width').value),height:Number($('height').value),steps:Number($('steps').value),cfg_scale:Number($('cfg').value),seed:Number($('seed').value),batch_size:1};
@@ -447,15 +462,20 @@ function draftBody(){
     body.hr_upscaler=$('hr-upscaler').value;body.hr_scale=scale;
     body.hr_resize_x=w;body.hr_resize_y=h;body.hr_steps=Number($('hr-steps').value);
     body.hr_denoising_strength=Number($('hr-denoise').value);
-    body.hrTurboSigma=$('hr-turbo-sigma').checked&&$('viggle').value==='6step';
+    body.hrTurboSigma=$('hr-turbo-sigma').checked&&$('turbo').value==='qwen-turbo';
     if(hrMode==='txt2img'){body.enable_hr=true;body.denoising_strength=body.hr_denoising_strength;}
     else body.hrNative=true;
   }
-  if($('viggle').value==='6step'){
-    viggleSigmas(body.width,body.height,body.steps);
-    body.viggleTurbo=true;body.cfg_scale=1;body.sampler_name='Euler';
+  const turbo=$('turbo').value;
+  if(turbo==='qwen-turbo'){
+    body.turbo=turbo;body.turboSigmas=turboSigmas();body.steps=body.turboSigmas.length-1;body.sampler_name='Euler';
+  }else if(turbo==='moss-4step'){
+    if(body.mode==='qwen_edit')throw Error('MOSS 4 步不支援 Qwen Edit（MOSS 沒有參考圖修圖分支）；請改用文字生圖或 Img2Img');
+    body.turbo=turbo;body.steps=MOSS4_STEPS;body.sampler_name='Euler';
   }
-  const loras=loraEntriesFromControls($('viggle').value==='6step');
+  const loras=loraEntriesFromControls();
+  draftWarning=turbo==='moss-4step'&&!loras.some(item=>/moss/i.test(item.path))
+    ?'（提醒：MOSS 4 步排程沒有勾選 MOSS 4 步 LoRA，畫面通常會糊或失真；如是刻意測試可忽略）':'';
   if(loras.length)body.lora=loras;
   return body;
 }
@@ -569,14 +589,27 @@ $('source-file').addEventListener('change',()=>{
     sweepSources().catch(()=>{});return key;
   })().catch(e=>{if(revision===sourceRevision){$('source-info').textContent=e.message;$('status').textContent=e.message;}return null;});
 });
-let normalSteps=$('steps').value;
-$('viggle').addEventListener('change',()=>{
-  if($('viggle').value==='6step'){
-    normalSteps=$('steps').value;$('steps').min='4';$('steps').value='6';
-  }else {$('steps').min='1';$('steps').value=normalSteps;}
-  syncHrOptions();
-});
-$('form').addEventListener('submit',async ev=>{ev.preventDefault();try{queue.add(await draftWithSource());$('status').textContent='已加入佇列；可繼續填下一筆，或按「開始／繼續」。';}catch(e){$('status').textContent=e.message;}});
+let normalSteps=$('steps').value,lastTurbo='off';
+function syncTurbo(fromUser){
+  const t=$('turbo').value;
+  if(lastTurbo==='off'&&t!=='off')normalSteps=$('steps').value;
+  if(t==='qwen-turbo'){
+    if(!$('turbo-sigmas').value.trim())$('turbo-sigmas').value=QWEN_TURBO_SIGMAS.join(', ');
+    try{$('steps').value=String(parseTurboSigmas($('turbo-sigmas').value).length);}catch(e){}
+    $('steps').readOnly=true;if(fromUser)$('cfg').value='1';
+  }else if(t==='moss-4step'){
+    $('steps').value=String(MOSS4_STEPS);$('steps').readOnly=true;if(fromUser)$('cfg').value='1';
+  }else{
+    $('steps').readOnly=false;if(lastTurbo!=='off')$('steps').value=normalSteps;
+  }
+  $('turbo-sigma-box').hidden=t!=='qwen-turbo';
+  $('turbo-help').innerHTML=TURBO_HELP[t]||'';
+  lastTurbo=t;syncHrOptions();
+}
+$('turbo').addEventListener('change',()=>syncTurbo(true));
+$('turbo-sigmas').addEventListener('input',()=>{try{$('steps').value=String(parseTurboSigmas($('turbo-sigmas').value).length);}catch(e){}});
+$('turbo-sigma-reset').addEventListener('click',()=>{$('turbo-sigmas').value=QWEN_TURBO_SIGMAS.join(', ');$('steps').value=String(QWEN_TURBO_SIGMAS.length);updateDirty();});
+$('form').addEventListener('submit',async ev=>{ev.preventDefault();try{queue.add(await draftWithSource());$('status').textContent='已加入佇列；可繼續填下一筆，或按「開始／繼續」。'+draftWarning;}catch(e){$('status').textContent=e.message;}});
 $('add-bulk').addEventListener('click',async()=>{
   try{const body=await draftWithSource();const lines=$('bulk').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
     if(!lines.length)throw Error('請先在批量欄位填入提示詞（一行一筆）');
@@ -600,22 +633,152 @@ function syncSizePreset(){const value=$('width').value+'x'+$('height').value;
 $('size-preset').addEventListener('change',()=>{const value=$('size-preset').value;if(value==='custom')return;
   const [w,h]=value.split('x');$('width').value=w;$('height').value=h;syncSizePreset();});
 function syncHrOptions(){
-  const mode=$('mode').value,viggleOn=$('viggle').value==='6step';
+  const mode=$('mode').value,turboOn=$('turbo').value==='qwen-turbo';
   $('hr-options').querySelectorAll('select,input').forEach(element=>{element.disabled=!$('enable-hr').checked;});
-  $('hr-turbo-sigma').disabled=!$('enable-hr').checked||!viggleOn;
-  $('hr-turbo-label').textContent=viggleOn?'第二輪沿用第一輪 turbo sigma':'第二輪沿用 turbo sigma（需先開啟 Viggle）';
+  $('hr-turbo-sigma').disabled=!$('enable-hr').checked||!turboOn;
+  $('hr-turbo-label').textContent=turboOn?'第二輪沿用官方 turbo sigma':'第二輪沿用 turbo sigma（需選 Qwen-Image-2.1-Turbo 排程）';
   $('hr-label').textContent=mode==='img2img'?'啟用 Hi-res：第一段圖片重畫 → 放大 → 第二輪低去噪':'啟用 Hi-res：先放大再做第二輪去噪';
   $('hr-help').innerHTML=mode==='img2img'
-    ?'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。圖生圖的 <code>/sdapi/v1/img2img</code> 在 sd-server 端會忽略 <code>enable_hr</code>（原始碼只有文字生圖那條會生效），所以此模式改走原生 <code>/sdcpp/v1/img_gen</code>：同一個請求帶 <code>init_image</code>、第一段強度（上面的「改動強度」）與 <code>hires</code>，伺服器先做第一段圖片重畫，再放大，最後以「第二輪去噪強度」重繪。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型；模型原生倍率以外的目標尺寸會被最近鄰縮放，所以倍率建議直接選模型的原生倍率。遮罩 Inpaint 與 Hi-res 不能同時使用。若第一輪有開 Viggle，可勾選「第二輪沿用第一輪 turbo sigma」讓放大階段沿用同一套排程。預設關閉，時間與 VRAM 都會明顯增加；放大後寬高須為 32 的倍數。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。'
-    :'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。文字生圖走 sd-server 原生 <code>enable_hr</code>：先放大，再用「第二輪去噪強度」重繪一次。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型（例如 RealESRGAN_x4plus_anime_6B 原生就是 4×，倍率選 4× 才不會被最近鄰縮掉細節）。若第一輪有開 Viggle，可勾選「第二輪沿用第一輪 turbo sigma」讓放大階段沿用同一套排程。預設關閉，會增加時間與 VRAM；8GB 建議從小圖開始。放大後寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。';
+    ?'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。圖生圖的 <code>/sdapi/v1/img2img</code> 在 sd-server 端會忽略 <code>enable_hr</code>（原始碼只有文字生圖那條會生效），所以此模式改走原生 <code>/sdcpp/v1/img_gen</code>：同一個請求帶 <code>init_image</code>、第一段強度（上面的「改動強度」）與 <code>hires</code>，伺服器先做第一段圖片重畫，再放大，最後以「第二輪去噪強度」重繪。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型；模型原生倍率以外的目標尺寸會被最近鄰縮放，所以倍率建議直接選模型的原生倍率。遮罩 Inpaint 與 Hi-res 不能同時使用。若選了 Qwen-Image-2.1-Turbo 排程，可勾選「第二輪沿用官方 turbo sigma」讓放大階段沿用同一組 sigma。預設關閉，時間與 VRAM 都會明顯增加；放大後寬高須為 32 的倍數。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。'
+    :'未勾選「啟用 Hi-res」時，以下選項不會送出、也不影響生圖。文字生圖走 sd-server 原生 <code>enable_hr</code>：先放大，再用「第二輪去噪強度」重繪一次。放大方法除了內建 Lanczos／Nearest，也可以選控制窗「Hi-res 放大器目錄」裡的外部 ESRGAN 模型（例如 RealESRGAN_x4plus_anime_6B 原生就是 4×，倍率選 4× 才不會被最近鄰縮掉細節）。若選了 Qwen-Image-2.1-Turbo 排程，可勾選「第二輪沿用官方 turbo sigma」讓放大階段沿用同一組 sigma。預設關閉，會增加時間與 VRAM；8GB 建議從小圖開始。放大後寬高須為 32 的倍數；1.5× 時部分尺寸無法使用。顯存不足時 sd-server 會直接回報失敗，重新整理頁面即可。';
 }
 $('enable-hr').addEventListener('change',syncHrOptions);
 // 伺服器比網頁晚就緒時的另一個補抓時機：展開 Hi-res 區塊、或勾選「啟用 Hi-res」時。
 $('enable-hr').addEventListener('change',()=>{if($('enable-hr').checked&&!upscalersReady)loadUpscalers();});
 $('hires-fields').addEventListener('toggle',()=>{if($('hires-fields').open&&!upscalersReady)loadUpscalers();});
 for(const id of ['width','height'])$(id).addEventListener('input',syncSizePreset);
+/*FORM_TEMPLATES_START*/
+// Like the LLM control window: editing a field never persists anything. Only «💾 儲存»
+// (or «另存模板» / «刪除模板») writes localStorage, so test values vanish on the next open.
+const FORM_STORE='ggufrun-image-form-v1';
+const FORM_FIELDS=['negative','width','height','steps','cfg','seed','sampler','turbo','turbo-sigmas','denoising-strength',
+  'enable-hr','hr-upscaler','hr-scale','hr-steps','hr-denoise','hr-turbo-sigma'];
+const BUILTIN_TEMPLATES={
+  'builtin:page':{label:'內建・頁面預設（一般模型）',values:null},
+  'builtin:qwen-turbo':{label:'內建・Qwen-Image-2.1-Turbo 官方 8 步',values:{turbo:'qwen-turbo','turbo-sigmas':QWEN_TURBO_SIGMAS.join(', '),
+    steps:String(QWEN_TURBO_SIGMAS.length),cfg:'1',sampler:'euler',negative:''}},
+  'builtin:moss-4step':{label:'內建・MOSS-Image 4 步（data-space）',values:{turbo:'moss-4step',steps:String(MOSS4_STEPS),cfg:'1',
+    sampler:'euler',negative:'','enable-hr':false,loras:[{path:MOSS4_LORA,multiplier:1}]}},
+};
+// Values whose options/LoRA list are not loaded from the server yet stay «pending» and are
+// reported as-is by formSnapshot, so a late-loading list never looks like an unsaved edit.
+let pendingSelects={},pendingLoras=null,formBaseline=null,autoTemplate='';
+const loraBase=path=>String(path||'').split(/[\\/]/).pop();
+function normalizeLoras(list){
+  return (Array.isArray(list)?list:[]).filter(item=>item&&item.path)
+    .map(item=>({path:loraBase(item.path),multiplier:loraStrength(item.multiplier,1)}))
+    .sort((a,b)=>a.path.localeCompare(b.path));
+}
+function formSnapshot(){const s={};for(const id of FORM_FIELDS){const el=$(id);if(!el)continue;
+    s[id]=id in pendingSelects?pendingSelects[id]:el.type==='checkbox'?el.checked:el.value;}
+  // sd-server reports «euler» while the page ships «Euler»: case is not a user change.
+  if(typeof s.sampler==='string')s.sampler=s.sampler.toLowerCase();
+  s.loras=pendingLoras!=null?pendingLoras:normalizeLoras(loraEntriesFromControls());return s;}
+function normalizeSnapshot(values){
+  const s={...(BUILTIN_TEMPLATES['builtin:page'].values||{}),...(values||{})};
+  if(typeof s.sampler==='string')s.sampler=s.sampler.toLowerCase();
+  s.loras=normalizeLoras(s.loras);return s;
+}
+function setSelect(el,value){const want=String(value).toLowerCase();
+  const option=[...el.options].find(o=>o.value.toLowerCase()===want);if(option){el.value=option.value;return true;}return false;}
+function applyPending(){
+  for(const [id,value] of Object.entries(pendingSelects))if(setSelect($(id),value))delete pendingSelects[id];
+  const items=document.querySelectorAll('#lora-list .lora-item');
+  if(pendingLoras!=null&&(items.length||loraCatalog.length||$('lora-warning').textContent)){
+    const want=new Map(pendingLoras.map(item=>[item.path.toLowerCase(),item.multiplier]));
+    for(const item of items){const key=loraBase(item.dataset.path).toLowerCase();
+      item.querySelector('input[type="checkbox"]').checked=want.has(key);
+      if(want.has(key)){item.querySelector('input[type="number"]').value=String(want.get(key));want.delete(key);}}
+    if(want.size)$('status').textContent='模板要用的 LoRA 伺服器沒有：'+[...want.keys()].join('、')+'（請確認 IMAGE-MODELS/loras）';
+    pendingLoras=null;
+  }
+  updateDirty();
+}
+const applyPendingSampler=applyPending;
+function applySnapshot(values){
+  if(!values||typeof values!=='object')return;
+  for(const id of FORM_FIELDS){
+    if(!(id in values))continue;const el=$(id);if(!el)continue;const value=values[id];
+    if(el.type==='checkbox')el.checked=Boolean(value);
+    else if(el.tagName==='SELECT'){if(setSelect(el,value))delete pendingSelects[id];else if(id==='sampler'||id==='hr-upscaler')pendingSelects[id]=String(value);}
+    else el.value=String(value);
+  }
+  if('loras' in values){pendingLoras=normalizeLoras(values.loras);applyPending();}
+  const t=$('turbo').value;
+  if(t==='off'){normalSteps=$('steps').value;lastTurbo='off';}else lastTurbo=t;
+  syncTurbo(false);syncSizePreset();syncHrOptions();
+}
+function loadFormStore(){
+  try{const d=JSON.parse(localStorage.getItem(FORM_STORE)||'{}');
+    return {saved:d.saved&&typeof d.saved==='object'?d.saved:null,current:typeof d.current==='string'?d.current:'',
+      templates:d.templates&&typeof d.templates==='object'?d.templates:{}};}
+  catch(e){return {saved:null,current:'',templates:{}};}
+}
+const formStore=loadFormStore();
+function writeFormStore(){try{localStorage.setItem(FORM_STORE,JSON.stringify(formStore));return true;}
+  catch(e){$('status').textContent='儲存失敗：'+e.message;return false;}}
+function renderTemplates(selected){
+  const sel=$('tpl');sel.replaceChildren();
+  const none=document.createElement('option');none.value='';none.textContent='（不使用模板）';sel.append(none);
+  for(const [key,item] of Object.entries(BUILTIN_TEMPLATES)){const o=document.createElement('option');o.value=key;o.textContent=item.label;sel.append(o);}
+  for(const name of Object.keys(formStore.templates).sort()){const o=document.createElement('option');o.value='user:'+name;o.textContent='自訂・'+name;sel.append(o);}
+  sel.value=[...sel.options].some(o=>o.value===selected)?selected:'';
+  $('tpl-delete').disabled=!sel.value.startsWith('user:');
+}
+function templateValues(key){
+  if(key.startsWith('user:'))return formStore.templates[key.slice(5)]||null;
+  const item=BUILTIN_TEMPLATES[key];if(!item)return null;
+  return item.values?{...BUILTIN_TEMPLATES['builtin:page'].values,...item.values}:BUILTIN_TEMPLATES['builtin:page'].values;
+}
+function formIsDirty(){return Boolean(formBaseline)&&JSON.stringify(formSnapshot())!==JSON.stringify(formBaseline);}
+function updateDirty(){
+  if(!formBaseline)return;
+  const dirty=formIsDirty();
+  const label=$('tpl-state');label.classList.toggle('dirty',dirty);
+  label.textContent=dirty?'● 有未儲存的變更（只用於這次測試；不按 💾 儲存，下次開頁會回到已儲存的數值）'
+    :autoTemplate?'✔ 已依載入的模型自動套用「'+autoTemplate+'」（沒寫入存檔；要設成下次預設請按 💾 儲存）'
+    :(formStore.saved?'✔ 與已儲存的數值相同':'尚未儲存過：目前是頁面預設值');
+}
+$('tpl').addEventListener('change',()=>{
+  const key=$('tpl').value;$('tpl-delete').disabled=!key.startsWith('user:');
+  if(!key){updateDirty();return;}
+  const values=templateValues(key);if(!values)return;
+  applySnapshot(values);updateDirty();
+  $('status').textContent='已套用模板「'+$('tpl').selectedOptions[0].textContent+'」；要保留到下次請按「💾 儲存」。';
+});
+$('tpl-save').addEventListener('click',()=>{
+  const key=$('tpl').value,values=formSnapshot();
+  formStore.saved=values;formStore.current=key;
+  if(key.startsWith('user:'))formStore.templates[key.slice(5)]=values;
+  if(!writeFormStore())return;
+  formBaseline=values;autoTemplate='';updateDirty();
+  $('status').textContent=key.startsWith('user:')?'已儲存，並更新自訂模板「'+key.slice(5)+'」。':'已儲存；下次開頁會還原這組參數。';
+});
+$('tpl-save-as').addEventListener('click',()=>{
+  const name=(prompt('模板名稱（同名會覆蓋）：','')||'').trim();if(!name)return;
+  if(name.length>40){$('status').textContent='模板名稱最多 40 字';return;}
+  const values=formSnapshot();
+  formStore.templates[name]=values;if(!writeFormStore())return;
+  renderTemplates('user:'+name);$('status').textContent='已另存模板「'+name+'」（目前的「已儲存數值」不變；按 💾 儲存才會設成下次開頁的預設）。';
+});
+$('tpl-delete').addEventListener('click',()=>{
+  const key=$('tpl').value;if(!key.startsWith('user:'))return;const name=key.slice(5);
+  if(!confirm('刪除自訂模板「'+name+'」？'))return;
+  delete formStore.templates[name];if(formStore.current===key)formStore.current='';
+  if(!writeFormStore())return;renderTemplates('');updateDirty();$('status').textContent='已刪除模板「'+name+'」。';
+});
+$('form').addEventListener('input',updateDirty);
+$('form').addEventListener('change',updateDirty);
+$('size-preset').addEventListener('change',updateDirty);
+BUILTIN_TEMPLATES['builtin:page'].values=formSnapshot();
+renderTemplates(formStore.current);
+if(formStore.saved)applySnapshot(formStore.saved);
+formBaseline=normalizeSnapshot(formStore.saved);
+/*FORM_TEMPLATES_END*/
 syncSizePreset();
+syncTurbo(false);
 syncHrOptions();
+updateDirty();
 renderQueue();
 sweepSources().catch(()=>{});
 setInterval(updateElapsed,1000);

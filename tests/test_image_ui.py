@@ -178,7 +178,7 @@ class ImageRuntimeTests(unittest.TestCase):
             self.assertIn('--offload-to-cpu', cmd)
 
     def test_full_checkpoint_and_extra_encoder_fields_are_supported(self):
-        b = pathlib.Path('D:/ExampleProject')
+        b = pathlib.Path('D:/GGUFRun')
         cmd = image_ui.build_server_cmd(b, 18436, False, runtime='custom/', models={
             'model': 'C:/outside/full.safetensors', 'clip_l': 'C:/outside/clip.gguf',
             'clip_g': 'C:/outside/clipg.gguf', 't5xxl': 'C:/outside/t5.gguf'})
@@ -262,7 +262,7 @@ class ImageRuntimeTests(unittest.TestCase):
             self.assertFalse(image_ui.supports_conditioning_cache('server.exe'))
 
     def test_mmproj_is_explicit_and_only_enabled_for_qwen_edit(self):
-        b = pathlib.Path('D:/ExampleProject')
+        b = pathlib.Path('D:/GGUFRun')
         models = {'diffusion': 'IMAGE-MODELS/model.gguf', 'llm': 'IMAGE-MODELS/llm.gguf',
                   'vae': 'IMAGE-MODELS/vae.safetensors',
                   'llm_vision': 'IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf'}
@@ -1336,29 +1336,52 @@ class ExtraArgsTests(unittest.TestCase):
         self.assertNotIn('--max-vram', html)  # VRAM reserve stays a control-window launch switch
 
 
-class ViggleHiresAndFilenameTests(unittest.TestCase):
-    """Hi-res 第二輪可沿用 turbo sigma；Viggle 產圖檔名帶 -6step／-turbo。"""
+class TurboHiresAndFilenameTests(unittest.TestCase):
+    """Viggle 已移除；Qwen-Image-2.1-Turbo 官方 sigma 與 MOSS 4 步排程取代它。"""
 
-    def test_hires_can_carry_the_first_round_turbo_sigma(self):
+    def test_viggle_is_gone(self):
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
-        for fragment in ('id="hr-turbo-sigma"', '第二輪沿用第一輪 turbo sigma',
-                         "body.hrTurboSigma=$('hr-turbo-sigma').checked&&$('viggle').value==='6step'",
-                         'if(viggleTurbo&&body.hrTurboSigma)',
-                         'native.hires.custom_sigmas=viggleSigmas(body.hr_resize_x,body.hr_resize_y,body.hr_steps)'):
+        self.assertNotIn('viggleSigmas', html)
+        self.assertNotIn('id="viggle"', html)
+
+    def test_official_turbo_sigmas_are_the_checkpoint_schedule(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        # Qwen/Qwen-Image-2.1-Turbo model_index.json sample_sigmas (diffusers PR #14950)
+        self.assertIn('const QWEN_TURBO_SIGMAS=[1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568];', html)
+        self.assertIn("sample_params.custom_sigmas=sigmaList", html)
+
+    def test_hires_can_carry_the_official_turbo_sigma(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        for fragment in ('id="hr-turbo-sigma"', '第二輪沿用官方 turbo sigma',
+                         "body.hrTurboSigma=$('hr-turbo-sigma').checked&&$('turbo').value==='qwen-turbo'",
+                         "if(turbo==='qwen-turbo'&&body.hrTurboSigma)native.hires.custom_sigmas=sigmaList;"):
             self.assertIn(fragment, html)
-        # 第二輪 sigma 只在有開 Viggle 且使用者勾選時才送；沒勾就維持自行推導排程。
-        self.assertIn('if(viggleTurbo&&body.hrTurboSigma)', html)
-        # 沿用 sigma 只在 Viggle 開啟時可用。
-        self.assertIn("$('hr-turbo-sigma').disabled=!$('enable-hr').checked||!viggleOn", html)
+        self.assertIn("$('hr-turbo-sigma').disabled=!$('enable-hr').checked||!turboOn", html)
 
-    def test_viggle_runs_are_tagged_in_the_saved_filename(self):
+    def test_moss_lora_is_user_selected_not_auto_attached(self):
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
-        self.assertIn('viggle:Boolean(body.viggleTurbo)', html)
-        # 別再把存圖 payload 寫成區塊外的裸變數：那正是先前存圖全數失敗的 ReferenceError 來源。
-        self.assertNotIn('viggle:Boolean(viggleTurbo)', html)
+        self.assertIn("sample_params.extra_sample_args='dataspace='+MOSS4_DATASPACE", html)
+        self.assertNotIn('loras.push({path:MOSS4_LORA', html)
+
+    def test_moss_template_ticks_its_lora_in_the_visible_list(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        # without the 4-step LoRA MOSS output is a blur, so the template pre-ticks it (user can untick)
+        self.assertIn("'enable-hr':false,loras:[{path:MOSS4_LORA,multiplier:1}]}}", html)
+        self.assertIn("if('loras' in values){pendingLoras=normalizeLoras(values.loras);applyPending();}", html)
+
+    def test_opening_the_page_is_not_reported_as_unsaved(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        # sd-server reports «euler», the page ships «Euler»
+        self.assertIn("if(typeof s.sampler==='string')s.sampler=s.sampler.toLowerCase();", html)
+        # model-driven auto template on open becomes the baseline when nothing was edited
+        self.assertIn("if(clean){formBaseline=formSnapshot();", html)
+        self.assertIn("formBaseline=normalizeSnapshot(formStore.saved);", html)
+
+    def test_turbo_runs_are_tagged_in_the_saved_filename(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        self.assertIn("turbo:body.turbo||'',", html)
         service = (ROOT / 'image_save_service.py').read_text(encoding='utf-8')
-        self.assertIn("if data.get('viggle') is True:", service)
-        self.assertIn("mode_label += '-6step' if steps == 6 else '-turbo'", service)
+        self.assertIn("mode_label += '-qwenturbo' if turbo == 'qwen-turbo' else '-moss4'", service)
 
 
 class FlashAttentionAndRefImageTests(unittest.TestCase):
@@ -1740,11 +1763,11 @@ class ModelCandidateTests(unittest.TestCase):
         self.assertNotIn('不支援去噪 Img2Img 或 Hi-res', html)
         self.assertNotIn('不支援 Hi-res 或一般去噪 Img2Img', html)
         # the native branch still forwards both blocks for the turbo path
-        self.assertIn('if(viggleTurbo||(mode===\'img2img\'&&body.hrNative))', html)
-        self.assertIn('sample_params.custom_sigmas=viggleSigmas', html)
+        self.assertIn('if(turbo||(mode===\'img2img\'&&body.hrNative))', html)
+        self.assertIn('sample_params.custom_sigmas=sigmaList', html)
         self.assertIn('native.hires={enabled:true', html)
-        # and the help text now says stage 2 can reuse the first-stage sigmas when opted in
-        self.assertIn('第二輪沿用第一輪 turbo sigma', html)
+        # and the help text now says stage 2 can reuse the official sigmas when opted in
+        self.assertIn('第二輪沿用官方 turbo sigma', html)
         self.assertNotIn('不會沿用第一輪 turbo sigma', html)
 
     def test_hi_res_scale_offers_a_same_size_enhance_option(self):
@@ -1770,6 +1793,39 @@ class ModelCandidateTests(unittest.TestCase):
         self.assertIsNotNone(m, '找不到改動強度欄位')
         self.assertIn('min="0"', m.group(0))
         self.assertNotIn('min="0.01"', m.group(0))
+
+
+class BuiltinFullTemplateTests(unittest.TestCase):
+    """控制窗內建完整模板：Qwen-Image-2.1-Turbo 官方 8 步與 MOSS 4 步。"""
+
+    def test_missing_builtins_are_added_with_file_name_binds(self):
+        data = image_ui.add_builtin_templates({'templates': {}, 'bind': {}, 'default': ''})
+        moss = data['templates'][image_ui.TPL_MOSS4]
+        self.assertEqual(moss['runtime'], 'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/')
+        self.assertEqual(moss['models']['diffusion'], 'IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors')
+        self.assertEqual(moss['models']['llm'], 'IMAGE-MODELS/Qwen3.5-9B-Q4_K_M.gguf')
+        self.assertEqual(moss['models']['vae'], 'IMAGE-MODELS/flux2-vae_small.safetensors')
+        self.assertIn('--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json', moss['extra_args'])
+        self.assertEqual(data['bind']['moss_image_sft_4step_int8_convrot.safetensors'], image_ui.TPL_MOSS4)
+        self.assertEqual(data['bind']['qwen-image-2.1-turbo-q4_k_m.gguf'], image_ui.TPL_QWEN_TURBO)
+        # the Qwen template keeps the user's own sampling-cache choice
+        self.assertNotIn('cache_mode', data['templates'][image_ui.TPL_QWEN_TURBO])
+
+    def test_deleted_builtins_and_user_edits_are_respected(self):
+        data = image_ui.add_builtin_templates({'templates': {image_ui.TPL_QWEN_TURBO: {'offload': False}},
+                                               'bind': {}, 'default': '',
+                                               'hidden_builtins': [image_ui.TPL_MOSS4]})
+        self.assertNotIn(image_ui.TPL_MOSS4, data['templates'])
+        self.assertNotIn('moss_image_sft_4step_int8_convrot.safetensors', data['bind'])
+        self.assertEqual(data['templates'][image_ui.TPL_QWEN_TURBO], {'offload': False})
+
+    def test_moss_template_builds_a_launch_command(self):
+        tpl = image_ui.builtin_templates()[image_ui.TPL_MOSS4]
+        cmd = image_ui.build_cmd_from_settings(ROOT, 18436, dict(tpl))
+        self.assertTrue(cmd[0].endswith(r'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64\sd-server.exe')
+                        or cmd[0].endswith('sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/sd-server.exe'))
+        self.assertEqual(cmd[cmd.index('--tokenizer') + 1], 'IMAGE-MODELS/tokenizer_qwen3.5.json')
+        self.assertIn('sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64', image_ui.ROCM_10_RUNTIMES)
 
 
 if __name__ == '__main__':

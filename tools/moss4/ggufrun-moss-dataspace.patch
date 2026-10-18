@@ -1,0 +1,278 @@
+diff --git a/src/pipeline/diffusion_engine.cpp b/src/pipeline/diffusion_engine.cpp
+index 70338bd..e5083e2 100644
+--- a/src/pipeline/diffusion_engine.cpp
++++ b/src/pipeline/diffusion_engine.cpp
+@@ -54,6 +54,153 @@
+ #include "runtime/latent-preview.h"
+ 
+ #include <atomic>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <mutex>
++
++#include "json.hpp"
++
++// ---------------------------------------------------------------------------
++// GGUFRun patch: data-space few-step sampler (MOSS-Image DMD checkpoints such as
++// akhaliq/MOSS-Image-SFT-4-steps and lodestones/MOSS-Image-SFT-8-steps-dmd).
++//
++// Reference loop (model card):
++//   z  = randn(latent);  x0 = 0
++//   for r in steps: x = z + einsum("oc,bchw->bohw", Q, x0)
++//                   v = transformer(x, step_codes[r]);  x0 = z - v
++// The noise z is held fixed for the whole run; only the data-space estimate x0 is fed
++// back through the learned channel mix Q.  Enabled per request with
++//   extra_sample_args: "dataspace=<path to dataspace.safetensors>"
++// ---------------------------------------------------------------------------
++namespace {
++
++struct DataspaceParams {
++    std::vector<float> Q;      // [C, C] row-major, Q[o * C + c]
++    std::vector<float> codes;  // timestep codes, 0..1000 scale
++    int64_t channels = 0;
++};
++
++static bool read_safetensors_f32(const nlohmann::json& header,
++                                 const std::string& blob,
++                                 const std::string& name,
++                                 std::vector<float>* out,
++                                 std::vector<int64_t>* shape) {
++    if (!header.contains(name)) {
++        LOG_ERROR("dataspace: tensor '%s' missing", name.c_str());
++        return false;
++    }
++    const auto& info  = header[name];
++    std::string dtype = info.value("dtype", "");
++    auto offsets      = info["data_offsets"].get<std::vector<uint64_t>>();
++    *shape            = info["shape"].get<std::vector<int64_t>>();
++    if (offsets.size() != 2 || offsets[1] < offsets[0] || offsets[1] > blob.size()) {
++        LOG_ERROR("dataspace: bad data_offsets for '%s'", name.c_str());
++        return false;
++    }
++    const char* src = blob.data() + offsets[0];
++    size_t bytes    = static_cast<size_t>(offsets[1] - offsets[0]);
++    out->clear();
++    if (dtype == "F32") {
++        out->resize(bytes / 4);
++        std::memcpy(out->data(), src, out->size() * 4);
++    } else if (dtype == "F64") {
++        out->resize(bytes / 8);
++        for (size_t i = 0; i < out->size(); ++i) {
++            double v;
++            std::memcpy(&v, src + i * 8, 8);
++            (*out)[i] = static_cast<float>(v);
++        }
++    } else if (dtype == "BF16") {
++        out->resize(bytes / 2);
++        for (size_t i = 0; i < out->size(); ++i) {
++            uint16_t h;
++            std::memcpy(&h, src + i * 2, 2);
++            uint32_t bits = static_cast<uint32_t>(h) << 16;
++            float v;
++            std::memcpy(&v, &bits, 4);
++            (*out)[i] = v;
++        }
++    } else {
++        LOG_ERROR("dataspace: unsupported dtype %s for '%s'", dtype.c_str(), name.c_str());
++        return false;
++    }
++    return true;
++}
++
++static bool load_dataspace_params(const std::string& path, DataspaceParams* params) {
++    static std::mutex cache_mutex;
++    static std::string cached_path;
++    static DataspaceParams cached;
++    std::lock_guard<std::mutex> lock(cache_mutex);
++    if (!cached_path.empty() && cached_path == path) {
++        *params = cached;
++        return true;
++    }
++    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
++    if (!file) {
++        LOG_ERROR("dataspace: cannot open '%s'", path.c_str());
++        return false;
++    }
++    uint64_t header_size = 0;
++    file.read(reinterpret_cast<char*>(&header_size), 8);
++    if (!file || header_size == 0 || header_size > (64ull << 20)) {
++        LOG_ERROR("dataspace: '%s' is not a safetensors file", path.c_str());
++        return false;
++    }
++    std::string header_text(static_cast<size_t>(header_size), '\0');
++    file.read(header_text.data(), static_cast<std::streamsize>(header_size));
++    std::string blob((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
++    nlohmann::json header;
++    try {
++        header = nlohmann::json::parse(header_text);
++    } catch (const std::exception& e) {
++        LOG_ERROR("dataspace: header parse failed: %s", e.what());
++        return false;
++    }
++    DataspaceParams loaded;
++    std::vector<int64_t> q_shape, c_shape;
++    try {
++        if (!read_safetensors_f32(header, blob, "latent_mix.Q", &loaded.Q, &q_shape) ||
++            !read_safetensors_f32(header, blob, "step_codes", &loaded.codes, &c_shape)) {
++            return false;
++        }
++    } catch (const std::exception& e) {
++        LOG_ERROR("dataspace: bad tensor entry: %s", e.what());
++        return false;
++    }
++    if (q_shape.size() != 2 || q_shape[0] != q_shape[1] || static_cast<int64_t>(loaded.Q.size()) != q_shape[0] * q_shape[1]) {
++        LOG_ERROR("dataspace: latent_mix.Q must be square");
++        return false;
++    }
++    if (loaded.codes.empty()) {
++        LOG_ERROR("dataspace: step_codes is empty");
++        return false;
++    }
++    loaded.channels = q_shape[0];
++    cached          = loaded;
++    cached_path     = path;
++    *params         = std::move(loaded);
++    return true;
++}
++
++static std::string find_dataspace_arg(const char* extra_sample_args) {
++    if (extra_sample_args == nullptr || extra_sample_args[0] == '\0') {
++        return "";
++    }
++    for (const auto& [key, value] : parse_key_value_args(extra_sample_args, "sample arg")) {
++        if (key == "dataspace" || key == "moss_dataspace") {
++            std::string v = value;
++            if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front()) {
++                v = v.substr(1, v.size() - 2);
++            }
++            return v;
++        }
++    }
++    return "";
++}
++
++}  // namespace
+ 
+ const char* model_version_to_str[] = {
+     "SD 1.x",
+@@ -2524,6 +2671,8 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
+                                                         : sampling_init_latent;
+     sd::Tensor<float> denoised                    = x_t;
+ 
++    float dataspace_timestep = -1.f;  // GGUFRun: >= 0 overrides the model timestep (MOSS step codes)
++
+     auto denoise = [&](const sd::Tensor<float>& x, float sigma, int step) -> sd::guidance::GuiderOutput {
+         if (get_cancel_flag() == SD_CANCEL_ALL) {
+             LOG_VERBOSE("cancelling generation");
+@@ -2549,6 +2698,11 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
+                                                                       preview_final_step);
+ 
+         std::vector<float> base_timesteps_vec = prepare_sample_timesteps(sigma, shifted_timestep);
++        if (dataspace_timestep >= 0.f) {
++            for (auto& t : base_timesteps_vec) {
++                t = dataspace_timestep;
++            }
++        }
+         std::vector<float> timesteps_vec      = base_timesteps_vec;
+         sd::Tensor<float> audio_timesteps_tensor;
+         if (sd_version_is_ltxav(version) && !denoise_mask.empty()) {
+@@ -2960,6 +3114,98 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
+         return output;
+     };
+ 
++    const std::string dataspace_path = version == VERSION_MOSS_IMAGE ? find_dataspace_arg(extra_sample_args) : std::string();
++    if (!dataspace_path.empty()) {
++        DataspaceParams ds;
++        if (!load_dataspace_params(dataspace_path, &ds)) {
++            return {};
++        }
++        const auto& shape = x_t.shape();
++        if (shape.size() < 3 || shape[2] != ds.channels) {
++            LOG_ERROR("dataspace: latent channel dim (%lld) does not match latent_mix.Q (%lld)",
++                      shape.size() >= 3 ? (long long)shape[2] : -1LL, (long long)ds.channels);
++            return {};
++        }
++        if (cache_runtime.spectrum_enabled) {
++            LOG_WARN("dataspace: spectrum cache disabled for the data-space sampler");
++            cache_runtime.spectrum_enabled = false;
++        }
++        const int64_t plane  = shape[0] * shape[1];
++        const int64_t C      = shape[2];
++        const int64_t batch  = x_t.numel() / (plane * C);
++        const int n_codes    = static_cast<int>(ds.codes.size());
++        const int run_steps  = static_cast<int>(steps);
++        // img2img: sd.cpp trims the schedule by strength; skip the same number of leading
++        // codes and seed x0 with the encoded init image instead of zeros.
++        const bool has_init  = std::any_of(sampling_init_latent.values().begin(), sampling_init_latent.values().end(),
++                                           [](float v) { return v != 0.f; });
++        int start = 0;
++        if (has_init && run_steps < n_codes) {
++            start = n_codes - run_steps;
++        } else if (!has_init && run_steps != n_codes) {
++            LOG_WARN("dataspace: %d steps requested, checkpoint has %d step codes; using %d", run_steps, n_codes, n_codes);
++        }
++        sd::Tensor<float> z  = noise.empty() ? x_t : noise;
++        sd::Tensor<float> x0 = has_init && start > 0 ? sampling_init_latent : sd::Tensor<float>(z.shape());
++        if (!(has_init && start > 0)) {
++            std::fill(x0.values().begin(), x0.values().end(), 0.f);
++        }
++        LOG_INFO("dataspace sampler: %d/%d codes from %s%s", n_codes - start, n_codes, dataspace_path.c_str(),
++                 start > 0 ? " (img2img)" : "");
++        const float* Q = ds.Q.data();
++        std::vector<float> mixed(static_cast<size_t>(C));
++        for (int r = start; r < n_codes; ++r) {
++            sd::Tensor<float> x = z;
++            if (r > 0) {
++                float* xv        = x.data();
++                const float* x0v = x0.data();
++                for (int64_t b = 0; b < batch; ++b) {
++                    for (int64_t p = 0; p < plane; ++p) {
++                        const int64_t base = b * C * plane + p;
++                        for (int64_t o = 0; o < C; ++o) {
++                            double acc = 0.0;
++                            const float* q_row = Q + o * C;
++                            for (int64_t c = 0; c < C; ++c) {
++                                acc += static_cast<double>(q_row[c]) * x0v[base + c * plane];
++                            }
++                            mixed[o] = static_cast<float>(acc);
++                        }
++                        for (int64_t o = 0; o < C; ++o) {
++                            xv[base + o * plane] += mixed[o];
++                        }
++                    }
++                }
++            }
++            const float code   = ds.codes[r];
++            const float sigma  = std::max(code / 1000.f, 1e-3f);
++            dataspace_timestep = code;
++            auto out           = denoise(x, sigma, r - start + 1);
++            if (out.pred.empty()) {
++                LOG_ERROR("Diffusion model sampling failed");
++                if (control_net) {
++                    control_net->free_control_ctx();
++                }
++                return {};
++            }
++            // pred = x - sigma * v  ->  v = (x - pred) / sigma ;  x0 = z - v
++            const float inv_sigma = 1.f / sigma;
++            float* x0v            = x0.data();
++            const float* zv       = z.data();
++            const float* xv       = x.data();
++            const float* pv       = out.pred.data();
++            for (int64_t i = 0; i < x0.numel(); ++i) {
++                x0v[i] = zv[i] - (xv[i] - pv[i]) * inv_sigma;
++            }
++        }
++        dataspace_timestep = -1.f;
++        sd_sample::log_sample_cache_summary(cache_runtime, steps);
++        x0 = denoiser->process_latent_out(std::move(x0));
++        if (control_net) {
++            control_net->free_control_ctx();
++        }
++        return x0;
++    }
++
+     auto x0_opt = sample_k_diffusion(method, denoise, x_t, sigmas, sampler_rng, eta, is_flow_denoiser, extra_sample_args, denoiser);
+     if (x0_opt.empty()) {
+         LOG_ERROR("Diffusion model sampling failed");

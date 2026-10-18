@@ -6,6 +6,7 @@
 /image-output/
 /logs/
 /tools/backups/
+/tools/moss4/.work/
 /tools/_*profile/
 /.env
 .env.*

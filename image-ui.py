@@ -23,7 +23,11 @@ from image_save_service import ImageSaveService
 BASE = pathlib.Path(__file__).resolve().parent
 
 
-ROCM_10_RUNTIME = 'sd-master-1d0a58a-bin-win-rocm-10.1.0-x64'
+ROCM_10_RUNTIME = 'sd-master-f0aac52-bin-win-rocm-10.1.0-x64'
+# sd-master-b13a482-moss4-*: local gfx1201 build with the GGUFRun MOSS data-space sampler patch.
+ROCM_10_RUNTIMES = (ROCM_10_RUNTIME, 'sd-master-1d0a58a-bin-win-rocm-10.1.0-x64',
+                    'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64')
+ROCM_10_SDK = pathlib.PurePosixPath('RUNTIMES/rocm-sdk-10.1.0')
 # 專案自備的 ROCm SDK 套件（packages/、packages-10.1.0/、rocm-10.1-manifest.json），相對專案根目錄
 ROCM_PACKAGES = pathlib.PurePosixPath('RUNTIMES/rocm-sdk-packages')
 
@@ -33,8 +37,8 @@ def local_rocm_environment(executable):
     env = os.environ.copy()
     runtime = pathlib.Path(executable).resolve().parent
     repair = BASE / ROCM_PACKAGES
-    if runtime.name.casefold() == ROCM_10_RUNTIME:
-        paths = (runtime, repair / 'packages-10.1.0' / '_rocm_sdk_libraries' / 'bin')
+    if runtime.name.casefold() in ROCM_10_RUNTIMES:
+        paths = (runtime, BASE / ROCM_10_SDK / 'bin')
     elif runtime.name.casefold() == 'stable-diffusion-rocm-master-929-3f8527a':
         paths = (runtime, repair / 'packages' / '_rocm_sdk_core' / 'bin',
                  repair / 'packages' / '_rocm_sdk_libraries' / 'bin')
@@ -60,20 +64,23 @@ def local_rocm_environment(executable):
 def local_rocm_launch_note(executable):
     """Validate the app-local HIP bundle used by the installed ROCm runtime."""
     runtime = pathlib.Path(executable).resolve().parent
-    if runtime.name.casefold() == ROCM_10_RUNTIME:
-        repair = BASE / ROCM_PACKAGES
-        manifest = json.loads((repair / 'rocm-10.1-manifest.json').read_text(encoding='utf-8'))
-        if manifest.get('sdk_version') != '10.1.0':
-            raise RuntimeError('ROCm SDK 版本不符 10.1.0')
-        for relative, expected in manifest['files'].items():
-            path = (BASE / relative).resolve()
-            if not path.is_relative_to(BASE.resolve()) or not path.is_file():
-                raise RuntimeError(f'ROCm 10.1 元件未齊備：{relative}')
-            with path.open('rb') as handle:
-                actual = hashlib.file_digest(handle, 'sha256').hexdigest()
-            if actual != expected:
-                raise RuntimeError(f'ROCm 10.1 元件 SHA256 不符：{relative}')
-        libraries = repair / 'packages-10.1.0' / '_rocm_sdk_libraries' / 'bin'
+    if runtime.name.casefold() in ROCM_10_RUNTIMES:
+        sdk = (BASE / ROCM_10_SDK).resolve()
+        for manifest_path, allowed_root in (
+                (runtime / 'rocm-runtime.json', runtime),
+                (sdk / 'sdk-manifest.json', sdk)):
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            if manifest.get('sdk_version') != '10.1.0' or not manifest.get('files'):
+                raise RuntimeError('ROCm SDK 版本不符 10.1.0 或驗證清單為空')
+            for relative, expected in manifest['files'].items():
+                path = (BASE / relative).resolve()
+                if not path.is_relative_to(allowed_root) or not path.is_file():
+                    raise RuntimeError(f'ROCm 10.1 元件未齊備：{relative}')
+                with path.open('rb') as handle:
+                    actual = hashlib.file_digest(handle, 'sha256').hexdigest()
+                if actual != expected:
+                    raise RuntimeError(f'ROCm 10.1 元件 SHA256 不符：{relative}')
+        libraries = sdk / 'bin'
         return (f'[GGUFRun] ROCm SDK 10.1.0 / gfx1201；SHA256 驗證完成' + chr(10)
                 + f'[GGUFRun] HIP（app-local）：{runtime / "amdhip64_7.dll"}' + chr(10)
                 + f'[GGUFRun] BLAS：{libraries}' + chr(10))
@@ -1027,21 +1034,83 @@ def default_presets():
     }
 
 
+# 「完整模板」：除了怎麼跑，還帶 runtime／模型路徑／額外指令，選了就整組換掉。
+# 這兩個是本機實測過的組合（1024² 文生圖，文字可讀）。
+MOSS4_RUNTIME = 'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/'
+TPL_QWEN_TURBO = 'Qwen-Image-2.1-Turbo 官方 8 步'
+TPL_MOSS4 = 'MOSS-Image 4 步（data-space）'
+FULL_TEMPLATE_MODEL_KEYS = ('model', 'diffusion', 'llm', 'llm_vision', 'clip_l', 'clip_g', 't5xxl', 'vae')
+
+
+def builtin_templates():
+    def models(**chosen):
+        return {key: chosen.get(key, '') for key in FULL_TEMPLATE_MODEL_KEYS}
+    return {
+        # 官方 sigma 由網頁「加速排程」逐次帶給伺服器；這裡負責模型與啟動參數。
+        TPL_QWEN_TURBO: {
+            'runtime': ROCM_10_RUNTIME + '/',
+            'models': models(diffusion='IMAGE-MODELS/qwen-image-2.1-turbo-Q4_K_M.gguf',
+                             llm='IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+                             llm_vision='IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
+                             vae='IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors'),
+            'extra_args': '',
+            'ref_image_args': REF_IMAGE_ARGS_DEFAULT,
+            # 不帶 cache_mode：沿用你自己選的取樣快取（例如 spectrum）；要固定就按 💾 存回模板。
+            'offload': True,
+            'vae_tiling': True, 'vae_relative_tile_size': '0.5',
+            'diffusion_fa': True, 'conditioning_cache_size': 'default',
+        },
+        # MOSS 4 步：fp32 time-embedding 底模＋GGUFRun moss4 runtime（data-space 取樣器）。
+        # 4 步 LoRA 不在這裡：網頁 LoRA 清單自己勾（伺服器執行時套用、不合併）。
+        TPL_MOSS4: {
+            'runtime': MOSS4_RUNTIME,
+            'models': models(diffusion='IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors',
+                             llm='IMAGE-MODELS/Qwen3.5-9B-Q4_K_M.gguf',
+                             vae='IMAGE-MODELS/flux2-vae_small.safetensors'),
+            'extra_args': '--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json',
+            'ref_image_args': '',
+            'offload': True, 'cache_mode': 'off', 'cache_threshold': '', 'cache_warmup': '',
+            'vae_tiling': True, 'vae_relative_tile_size': '0.5',
+            'diffusion_fa': True, 'conditioning_cache_size': 'default',
+        },
+    }
+
+
+BUILTIN_BINDS = {
+    'qwen-image-2.1-turbo-q4_k_m.gguf': TPL_QWEN_TURBO,
+    'moss_image_sft_4step_int8_convrot.safetensors': TPL_MOSS4,
+}
+
+
+def add_builtin_templates(data):
+    """補上沒有的內建完整模板與檔名綁定；使用者刪過的（hidden_builtins）不再補回。"""
+    hidden = data.get('hidden_builtins')
+    if not isinstance(hidden, list):
+        hidden = data['hidden_builtins'] = []
+    for name, tpl in builtin_templates().items():
+        if name not in hidden and name not in data['templates']:
+            data['templates'][name] = tpl
+    for key, name in BUILTIN_BINDS.items():
+        if name in data['templates'] and name not in hidden and key not in data['bind']:
+            data['bind'][key] = name
+    return data
+
+
 def load_presets(path=None):
     """讀模板檔；不存在或壞掉時回傳內建預設（不寫檔，第一次按儲存才落地）。"""
     path = pathlib.Path(PRESETS_FILE if path is None else path)
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return default_presets()
+        return add_builtin_templates(default_presets())
     if not isinstance(data, dict):
-        return default_presets()
+        return add_builtin_templates(default_presets())
     for key, fallback in (('templates', {}), ('bind', {})):
         if not isinstance(data.get(key), dict):
             data[key] = fallback
     if not isinstance(data.get('default'), str):
         data['default'] = ''
-    return data
+    return add_builtin_templates(data)
 
 
 def save_presets(data, path=None):
@@ -1305,8 +1374,12 @@ class ImageApp:
         ttk.Button(_tr2, text='✂ 解除綁定', command=self._tpl_unbind).pack(side='left', padx=2)
         self.lbl_tpl = ttk.Label(_tr2, text='', foreground='#666')
         self.lbl_tpl.pack(side='left', padx=10)
-        hint(_tr2, '模板只存「怎麼跑」：offload／取樣加速／threshold／warmup／VAE 分塊／'
+        hint(_tr2, '一般模板只存「怎麼跑」：offload／取樣加速／threshold／warmup／VAE 分塊／'
                    'Flash Attention／conditioning cache。不含埠、模型路徑本身。\n'
+                   '完整模板（內建「Qwen-Image-2.1-Turbo 官方 8 步」「MOSS-Image 4 步」，或另存時選「是」）'
+                   '還會一起換 runtime、全部模型欄位、額外指令與參考圖參數。\n'
+                   '內建綁定：選到 qwen-image-2.1-turbo-Q4_K_M.gguf 或 moss_image_sft_4step_int8_convrot '
+                   '會自動套對應模板；刪掉內建模板後不會再補回。\n'
                    '切到「綁定」的模型會自動套用該模板；沒有綁定的模型套用「預設模板」。\n'
                    '手動改上面任何一個模板欄位不會自動寫檔；按「💾 儲存參數」才會存回目前選的模板。'
                    '\n\n另存＝把目前畫面參數存成新模板；設為預設＝沒綁定的模型都套用它。').pack(side='left', padx=(4, 0))
@@ -1594,9 +1667,9 @@ class ImageApp:
         except tk.TclError:
             pass
 
-    def _tpl_snapshot(self):
-        """目前畫面上的啟動參數 → 一份模板內容。"""
-        return {
+    def _tpl_snapshot(self, full=False):
+        """目前畫面上的啟動參數 → 一份模板內容；full＝連 runtime／模型／額外指令一起。"""
+        snap = {
             'offload': bool(self.offload.get()),
             'cache_mode': self.cache_mode.get(),
             'cache_threshold': self.cache_threshold.get(),
@@ -1606,11 +1679,30 @@ class ImageApp:
             'diffusion_fa': bool(self.diffusion_fa.get()),
             'conditioning_cache_size': self.conditioning_cache_size.get(),
         }
+        if full:
+            snap.update({'runtime': self.runtime.get(),
+                         'models': {key: self.models[key].get() for key in FULL_TEMPLATE_MODEL_KEYS
+                                    if key in self.models},
+                         'extra_args': self.extra_args.get(),
+                         'ref_image_args': self.ref_image_args.get()})
+        return snap
 
     def _tpl_apply(self, tpl):
         """把模板內容套到 UI；只套模板有的欄位，缺的不動。"""
         if not isinstance(tpl, dict):
             return
+        # 完整模板：runtime／模型／額外指令一起換（模型欄位整組覆蓋，避免殘留上一個模型的 VAE 等）。
+        if isinstance(tpl.get('runtime'), str) and tpl['runtime'].strip():
+            self.runtime.set(tpl['runtime'])
+        if isinstance(tpl.get('models'), dict):
+            for key, var in self.models.items():
+                value = tpl['models'].get(key, '')
+                var.set(value if isinstance(value, str) else '')
+        for var, key in ((self.extra_args, 'extra_args'), (self.ref_image_args, 'ref_image_args')):
+            if isinstance(tpl.get(key), str):
+                var.set(tpl[key])
+        # 套模板時自己改到的生圖模型，不要再觸發一次「切模型自動套用」。
+        self._tpl_model_key = self._tpl_model_key_of(self.models[self._TPL_KEY].get())
         for var, key in ((self.cache_threshold, 'cache_threshold'), (self.cache_warmup, 'cache_warmup'),
                          (self.vae_relative_tile_size, 'vae_relative_tile_size'),
                          (self.conditioning_cache_size, 'conditioning_cache_size')):
@@ -1668,14 +1760,16 @@ class ImageApp:
             self._tpl_apply(tpl)
         finally:
             self._tpl_busy = False
-        self._log(f'[模板] 已套用「{name}」\n')
+        self._log(f'[模板] 已套用「{name}」（要保留到下次請按 💾 儲存參數）\n')
+        self._on_param_change()
 
     def _tpl_store_current(self, name=None, quiet=False):
         """把目前參數存回（指定或目前的）模板；按儲存鈕時走 quiet。"""
         name = name or self._tpl_current_name()
         if not name or name not in self._presets['templates']:
             return False
-        self._presets['templates'][name] = self._tpl_snapshot()
+        old = self._presets['templates'].get(name)
+        self._presets['templates'][name] = self._tpl_snapshot(full=isinstance(old, dict) and 'models' in old)
         ok = save_presets(self._presets)
         if not quiet:
             self._log(f"[模板] {'已存回' if ok else '⚠ 存檔失敗：'}「{name}」\n")
@@ -1732,7 +1826,11 @@ class ImageApp:
         if name in self._presets['templates'] and not messagebox.askyesno(
                 '覆蓋模板', f'模板「{name}」已存在，要覆蓋嗎？'):
             return
-        self._presets['templates'][name] = self._tpl_snapshot()
+        full = messagebox.askyesno(
+            '模板內容', '要連 runtime、模型路徑、額外指令、參考圖參數一起存進模板嗎？\n\n'
+            '是＝完整模板（選它就整組換模型，像內建的 MOSS／Qwen Turbo 模板）\n'
+            '否＝只存怎麼跑（offload、快取、VAE 分塊、Flash Attention…）')
+        self._presets['templates'][name] = self._tpl_snapshot(full=full)
         if save_presets(self._presets):
             self.tpl.set(name)
             self._tpl_refresh_ui()
@@ -1758,6 +1856,7 @@ class ImageApp:
                 '名稱已存在', f'已有模板叫「{new}」，要覆蓋它嗎？'):
             return
         self._presets['templates'][new] = self._presets['templates'].pop(old)
+        self._tpl_hide_builtin(old)
         for key, value in list(self._presets['bind'].items()):
             if value == old:
                 self._presets['bind'][key] = new
@@ -1777,6 +1876,7 @@ class ImageApp:
         if not messagebox.askyesno('刪除模板', f'要刪除模板「{name}」嗎？\n（有綁定它的模型會自動改回不套用）'):
             return
         self._presets['templates'].pop(name, None)
+        self._tpl_hide_builtin(name)
         for key in [k for k, v in self._presets['bind'].items() if v == name]:
             self._presets['bind'].pop(key, None)
         if self._presets.get('default') == name:
@@ -1784,6 +1884,13 @@ class ImageApp:
         if save_presets(self._presets):
             self._log(f'[模板] 已刪除模板「{name}」\n')
             self._tpl_refresh_ui()
+
+    def _tpl_hide_builtin(self, name):
+        """刪除／改名內建模板後記下來，下次開啟不再自動補回。"""
+        if name in builtin_templates():
+            hidden = self._presets.setdefault('hidden_builtins', [])
+            if name not in hidden:
+                hidden.append(name)
 
     def _tpl_set_default(self):
         name = self._tpl_current_name()
@@ -1847,7 +1954,8 @@ class ImageApp:
         self._tpl_model_key = key
         if not changed:
             return
-        name = self._presets['bind'].get(key)
+        name = (self._presets['bind'].get(key) or
+                self._presets['bind'].get(os.path.normcase(pathlib.Path(key).name)))
         source = '此模型綁定'
         if not (name and name in self._presets['templates']):
             name = self._tpl_default_name()

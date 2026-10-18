@@ -83,18 +83,55 @@ GGUFRun/
   image-output/              圖片與 Image Server 日誌（執行後產生）
 ```
 
-使用者設定儲存在 `models.json`、`ui-settings.json`、`presets.json`、`image-settings.json`；生成圖片與 Image Server 日誌儲存在 `image-output/`。
+使用者設定儲存在 `models.json`、`ui-settings.json`、`presets.json`、`image-settings.json`、`image-presets.json`（都只在按儲存時寫入）；生成圖片與 Image Server 日誌儲存在 `image-output/`。
 
-## Viggle Qwen-Image-2.1 Turbo（生圖頁選配）
+## 參數模板與儲存
 
-生圖頁有「Viggle Qwen-Image-2.1 Turbo LoRA（選填）」選單，預設關閉。選 Viggle Turbo 後，單張任務固定 Euler、CFG 1，並依輸出尺寸換算時間位移；「取樣步數」預設 6、可自訂 **4～150**：作者列出 4 步訓練節點、5／6／7 步高噪聲切分，以及密集文字建議的 **8 步**節點（[官方比較頁](https://huggingface.co/spaces/Viggle/Qwen-Image-2.1-viggle-turbo)的 5 個密集文字範例即用 8 步），9 步以上依作者「保留低噪聲節點、只細分高噪聲區段」原則推算，非逐一驗證的最佳值。可與 Hi-res 或去噪 Img2Img 併用；Hi-res 第二輪預設用獨立排程，勾選「第二輪沿用第一輪 turbo sigma」後改以放大後尺寸與第二輪步數重算同一套排程。關閉時步數恢復原值。
+控制窗與生圖頁都是**手動儲存**（跟 LLM 控制窗一樣）：改參數、套模板只影響這次，要留到下次開啟請按控制窗「💾 儲存參數」或生圖頁模板列的「💾 儲存」；未存時會顯示提示。只是測參數就不用存，關掉即還原。
 
-權重有兩種用法：掛 **LoRA**（`IMAGE-MODELS/loras/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128-fused-gguf.safetensors`；官方原始 r128 權重未隨附，重建衍生檔見 `tools/viggle-turbo/fuse_viggle.py`），或直接把作者轉好的 **融合 GGUF** 當生圖模型（此時開啟頁面會偵測模型名含 `viggle` 並自動啟用、免再掛 LoRA，避免重複套用）。兩種權重皆須自備；**本公開版不附任何 Viggle 權重**。[Viggle 模型卡](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)標示非商業研究與評估限制。
+控制窗內建兩個**完整模板**（存在 `image-presets.json`，第一次按儲存才寫檔），選了會一起換 runtime、全部模型欄位、額外指令與參考圖參數；選到對應的生圖模型檔也會自動套用。內建模板可改、可覆蓋，刪掉後不會再自動補回。自己另存模板時可選「完整模板」或只存「怎麼跑」（offload、取樣快取、VAE 分塊、Flash Attention…）。
 
-LoRA 一經伺服器套用即常駐，切回「關閉」不會歸還記憶體；網頁在選項旁有「♻ 釋放 LoRA 記憶體（重啟 Image Server）」按鈕，以相同啟動參數重啟後釋放。8 GB 顯卡請保留 CPU offload。
+| 內建模板 | runtime | 生圖模型 | LLM 編碼器 | VAE | 額外 |
+|---|---|---|---|---|---|
+| Qwen-Image-2.1-Turbo 官方 8 步 | `sd-master-f0aac52-bin-win-rocm-10.1.0-x64` | `qwen-image-2.1-turbo-Q4_K_M.gguf` | `Qwen3VL-8B-Instruct-Q4_K_M.gguf`（＋ mmproj） | `qwen_image_2.1_vae_bf16.safetensors` | 沿用你選的取樣快取 |
+| MOSS-Image 4 步（data-space） | `sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64` | `moss_image_sft_4step_int8_convrot.safetensors` | `Qwen3.5-9B-Q4_K_M.gguf` | `flux2-vae_small.safetensors` | `--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json` |
+
+生圖頁另有自己的模板列（內建「頁面預設」「Qwen Turbo 8 步」「MOSS 4 步」，可另存／刪除自訂模板），管的是步數、CFG、取樣器、加速排程、LoRA 勾選與強度等每張圖的參數。開頁時若載入的是 Qwen Turbo 或 MOSS 4 步模型，會自動套用對應模板（不寫入存檔）。
+
+## Qwen-Image-2.1-Turbo 官方 8 步（生圖頁「加速排程」）
+
+[Qwen-Image-2.1-Turbo](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) 是官方 8 步加速版，權重自帶推薦排程（diffusers [PR #14950](https://github.com/huggingface/diffusers/pull/14950) 的 pipeline sigma）。生圖頁「加速排程」選「Qwen-Image-2.1-Turbo 官方 8 步」（模型檔名含 `turbo` 時自動選）後，每次請求固定 Euler、CFG 1、8 步，並以 `custom_sigmas` 送出官方清單：
+
+```text
+1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0
+```
+
+shift 1.0、不隨解析度位移；sigma 欄可自行微調，「還原官方」恢復。需要支援每次請求 `custom_sigmas` 的 sd-server（`sd-master-f0aac52` 起）。Hi-res 勾「第二輪沿用官方 turbo sigma」時，伺服器依第二輪去噪強度截取同一清單的尾段。本機 1024² 實測（RX 9070）：官方 sigma 與一般排程同樣 8 步，每步計算量相同（取樣約 19～23 秒），官方 sigma 的招牌與小黑板文字都正確、畫面較乾淨。
+
+舊的 Viggle Turbo（LoRA／融合 GGUF、6 步排程）已移除，請改用官方 Turbo。舊存圖檔名的 `-6step`／`-turbo` 標籤仍可讀取；新圖改標 `-qwenturbo` 或 `-moss4`。
+
+## MOSS-Image 4 步（實驗性，需 GGUFRun 自編 runtime）
+
+[MOSS-Image-SFT-4-steps](https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps) 是 [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image) 的 4 步蒸餾版：它不走一般 sigma 排程，而是在 data-space 迴圈（`x = z + Q·x0`、`v = T(x, step_code)`、`x0 = z − v`）跑 4 個學到的 step code，官方 stable-diffusion.cpp 沒有這個取樣器。
+
+需要準備：
+
+- runtime：`RUNTIMES/sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/`（stable-diffusion.cpp master `b13a482`＋同目錄 `ggufrun-moss-dataspace.patch`，ROCm 10.1.0、gfx1201；來源與 SHA-256 見 `rocm-runtime.json`）。
+- 底模：`IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors`，是 MOSS-Image-SFT int8 底模換上 4 步版 fp32 `time_embedding` 的衍生檔。
+- `IMAGE-MODELS/moss-4step/dataspace.safetensors`（step code 與 latent mix Q），生圖頁每次請求以 `extra_sample_args` 帶 `dataspace=…` 啟用，只對 MOSS 模型生效，並自動關閉 spectrum 快取。
+- LoRA：`IMAGE-MODELS/loras/MOSS-Image-SFT-4-steps-lora.safetensors`，**必須套用，沒套圖會整張糊掉**。生圖頁的「MOSS 4 步」模板（載入 MOSS 模型開頁時會自動套用）會在 LoRA 清單幫你勾好（強度 1，執行時套用、不合併進底模），要取消可自己取消；選 MOSS 4 步卻沒勾時，加入佇列會提醒。
+- LLM `Qwen3.5-9B-Q4_K_M.gguf`、VAE `flux2-vae_small.safetensors`、`tokenizer_qwen3.5.json`；控制窗選「MOSS-Image 4 步」模板即全部帶入。
+
+本機 1024² 實測：取樣約 22 秒（含載入約 37 秒），黑板菜單文字正確。
+
+**圖生圖**：MOSS 只發布文生圖，沒有指令編輯版本，LoRA 也補不了。runtime 有實作 SDEdit 式 Img2Img：以原圖為起點，只跑後段 step code（去噪強度 1／0.75／0.5／0.25 分別從第 1／2／3／4 個 code 開始）。可用但 4 步蒸餾每一步都重算整張圖，強度 0.5、0.25 幾乎重畫，0.1 能保留構圖、換光線但文字會糊。適合同構圖換風格；要忠實改圖請用 Qwen-Image-2.1 Turbo 的 Img2Img 或 Qwen Edit（MOSS 不支援 Qwen Edit 參考圖，網頁會阻擋）。
+
+**自己重編 runtime**：`tools/moss4/build-sd.bat`（不動系統環境，需要 VS2022 C++ 工作負載、git、uv）。它會在 `tools/moss4/.work/` 用 uv 建 Python 3.12 venv、從 AMD 官方源 `https://stable.repo.amd.com/rocm/whl-next/` 裝 `rocm[libraries,devel]==10.1.0`（含 HIP／clang），抓 stable-diffusion.cpp `b13a482` 並套上 `ggufrun-moss-dataspace.patch`，仿官方 CI 以 `-DSD_HIPBLAS=ON -DGPU_TARGETS=gfx1201` 編譯，最後由 `package_runtime.py` 放進 `RUNTIMES/` 並寫好 SHA-256 清單。編完 `.work` 約 4.5 GB 可刪。執行時 PATH 需含 runtime 目錄與 `RUNTIMES/rocm-sdk-10.1.0/bin`（控制窗會自動設定）。
+
+**自己做 4 步底模**：把 [akhaliq/MOSS-Image-SFT-4-steps](https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps) 的 `time_embedding.safetensors` 放到 `IMAGE-MODELS/moss-4step/`，執行 `python tools/moss4/make_moss_4step_base.py`，會從 `moss_image_sft_int8_convrot.safetensors` 產生 `moss_image_sft_4step_int8_convrot.safetensors`（約 5.4 GB）。
 
 ## 可選功能與授權
 
-Image 網頁支援文字生圖、Img2Img、Qwen Edit 多參考圖與選配 Hi-res；支援哪些功能取決於模型與 sd-server 建置。Viggle Turbo LoRA 是選配，**本公開版不附權重也不附轉換後權重**；未取得合法且相容的權重時請維持關閉。[Viggle 模型卡](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo)標示非商業研究與評估限制。請分別遵守模型、runtime、LoRA 的原始授權；本專案 [MIT 授權](LICENSE) 僅涵蓋本專案程式碼。
+Image 網頁支援文字生圖、Img2Img、Qwen Edit 多參考圖與選配 Hi-res；支援哪些功能取決於模型與 sd-server 建置。**本公開版不附任何模型、LoRA 或衍生權重**（含 MOSS 4 步底模）；Qwen-Image-2.1-Turbo、MOSS-Image 及其 4 步權重請依各自模型卡授權自行下載。請分別遵守模型、runtime、LoRA 的原始授權；本專案 [MIT 授權](LICENSE) 僅涵蓋本專案程式碼。
 
 測試：`py -3 -m unittest discover -s tests -p 'test_*.py'`；瀏覽器佇列測試另需 Node.js：`node --test tests/test_image_queue.cjs`。正常使用不需要 Node.js。
