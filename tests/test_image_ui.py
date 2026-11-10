@@ -1381,7 +1381,20 @@ class TurboHiresAndFilenameTests(unittest.TestCase):
         html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
         self.assertIn("turbo:body.turbo||'',", html)
         service = (ROOT / 'image_save_service.py').read_text(encoding='utf-8')
-        self.assertIn("mode_label += '-qwenturbo' if turbo == 'qwen-turbo' else '-moss4'", service)
+        self.assertIn("TURBO_TAGS = {'': '', 'qwen-turbo': '-qwenturbo', 'moss-4step': '-moss4', 'moss-8step': '-moss8'}", service)
+
+    def test_moss_8step_schedule_sends_its_own_dataspace_and_lora(self):
+        html = (ROOT / 'assets/image-web.html').read_text(encoding='utf-8')
+        for fragment in ('<option value="moss-8step">',
+                         "const MOSS8_DATASPACE='IMAGE-MODELS/moss-image/8step-dmd/dataspace.safetensors';",
+                         "const MOSS8_LORA='MOSS-Image-SFT-8-steps-dmd-lora.safetensors';",
+                         "const MOSS8_STEPS=8;",
+                         "sample_params.extra_sample_args='dataspace='+MOSS8_DATASPACE",
+                         "'enable-hr':false,loras:[{path:MOSS8_LORA,multiplier:1}]}}",
+                         "const auto=/moss.*8.?step/i.test(name)?'moss-8step':"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, html)
+        self.assertIn("const MOSS4_DATASPACE='IMAGE-MODELS/moss-image/4step/dataspace.safetensors';", html)
 
 
 class FlashAttentionAndRefImageTests(unittest.TestCase):
@@ -1796,17 +1809,25 @@ class ModelCandidateTests(unittest.TestCase):
 
 
 class BuiltinFullTemplateTests(unittest.TestCase):
-    """控制窗內建完整模板：Qwen-Image-2.1-Turbo 官方 8 步與 MOSS 4 步。"""
+    """控制窗內建完整模板：Qwen-Image-2.1-Turbo 官方 8 步、MOSS 4 步與 MOSS 8 步 DMD。"""
 
     def test_missing_builtins_are_added_with_file_name_binds(self):
         data = image_ui.add_builtin_templates({'templates': {}, 'bind': {}, 'default': ''})
         moss = data['templates'][image_ui.TPL_MOSS4]
         self.assertEqual(moss['runtime'], 'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/')
-        self.assertEqual(moss['models']['diffusion'], 'IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors')
-        self.assertEqual(moss['models']['llm'], 'IMAGE-MODELS/Qwen3.5-9B-Q4_K_M.gguf')
-        self.assertEqual(moss['models']['vae'], 'IMAGE-MODELS/flux2-vae_small.safetensors')
-        self.assertIn('--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json', moss['extra_args'])
+        self.assertEqual(moss['models']['diffusion'], 'IMAGE-MODELS/moss-image/moss_image_sft_4step_int8_convrot.safetensors')
+        self.assertEqual(moss['models']['llm'], 'IMAGE-MODELS/moss-image/Qwen3.5-9B-Q4_K_M.gguf')
+        self.assertEqual(moss['models']['vae'], 'IMAGE-MODELS/moss-image/flux2-vae_small.safetensors')
+        self.assertIn('--tokenizer IMAGE-MODELS/moss-image/tokenizer_qwen3.5.json', moss['extra_args'])
         self.assertEqual(data['bind']['moss_image_sft_4step_int8_convrot.safetensors'], image_ui.TPL_MOSS4)
+        moss8 = data['templates'][image_ui.TPL_MOSS8]
+        self.assertEqual(moss8['runtime'], moss['runtime'])
+        self.assertEqual(moss8['models']['diffusion'], 'IMAGE-MODELS/moss-image/moss_image_sft_8step_int8_convrot.safetensors')
+        self.assertEqual({k: v for k, v in moss8['models'].items() if k != 'diffusion'},
+                         {k: v for k, v in moss['models'].items() if k != 'diffusion'})
+        self.assertEqual(data['bind']['moss_image_sft_8step_int8_convrot.safetensors'], image_ui.TPL_MOSS8)
+        qwen = data['templates'][image_ui.TPL_QWEN_TURBO]
+        self.assertEqual(qwen['models']['diffusion'], 'IMAGE-MODELS/qwen-image/qwen-image-2.1-turbo-Q4_K_M.gguf')
         self.assertEqual(data['bind']['qwen-image-2.1-turbo-q4_k_m.gguf'], image_ui.TPL_QWEN_TURBO)
         # the Qwen template keeps the user's own sampling-cache choice
         self.assertNotIn('cache_mode', data['templates'][image_ui.TPL_QWEN_TURBO])
@@ -1824,7 +1845,7 @@ class BuiltinFullTemplateTests(unittest.TestCase):
         cmd = image_ui.build_cmd_from_settings(ROOT, 18436, dict(tpl))
         self.assertTrue(cmd[0].endswith(r'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64\sd-server.exe')
                         or cmd[0].endswith('sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/sd-server.exe'))
-        self.assertEqual(cmd[cmd.index('--tokenizer') + 1], 'IMAGE-MODELS/tokenizer_qwen3.5.json')
+        self.assertEqual(cmd[cmd.index('--tokenizer') + 1], 'IMAGE-MODELS/moss-image/tokenizer_qwen3.5.json')
         self.assertIn('sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64', image_ui.ROCM_10_RUNTIMES)
 
 

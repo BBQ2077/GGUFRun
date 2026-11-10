@@ -29,6 +29,9 @@ PHASES = (('generate_image completed', 'done'), ('decode_first_stage completed',
           ('encode_first_stage completed', 'encode'),
           ('preprocess init[', 'preprocess'), ('preprocess ref[', 'preprocess'))
 
+# Filename tag per accelerated schedule ('' = ordinary Euler/sampler run).
+TURBO_TAGS = {'': '', 'qwen-turbo': '-qwenturbo', 'moss-4step': '-moss4', 'moss-8step': '-moss8'}
+
 
 def parse_progress(text, steps=0):
     """Describe the live phase of the newest generation in a server.log tail.
@@ -204,12 +207,11 @@ class ImageSaveService:
                         raise ValueError('圖生圖改動強度不正確')
                     mode_label = f'-img2img-dn{strength:g}' if mode == 'img2img' else ('-qwenedit' if mode == 'qwen_edit' else '')
                     # Accelerated schedules get a tag so they are not mistaken for plain Euler renders:
-                    # '-qwenturbo' = Qwen-Image-2.1-Turbo official sigmas, '-moss4' = MOSS data-space.
+                    # '-qwenturbo' = Qwen-Image-2.1-Turbo official sigmas, '-moss4'／'-moss8' = MOSS data-space.
                     turbo = data.get('turbo', '')
-                    if turbo not in ('', 'qwen-turbo', 'moss-4step'):
+                    if turbo not in TURBO_TAGS:
                         raise ValueError('加速排程不正確')
-                    if turbo:
-                        mode_label += '-qwenturbo' if turbo == 'qwen-turbo' else '-moss4'
+                    mode_label += TURBO_TAGS[turbo]
                     cfg_text = f'{cfg:g}'
                     seed_text = str(seed) if seed >= 0 else 'random-unknown'
                     seconds = round(elapsed / 1000)
@@ -262,7 +264,7 @@ class ImageSaveService:
                     return
                 name = parsed.path.removeprefix('/image/')
                 valid_old = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-(?:[0-9]+|x)-[0-9a-f]{12}\.png', name)
-                valid_new = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-[0-9]+x[0-9]+-[0-9]+steps-cfg[0-9.]+-seed(?:[0-9]+|random-unknown)-[a-z0-9]+(?:-img2img-dn(?:[01](?:\.[0-9]+)?)|-qwenedit)?(?:-(?:6step|turbo|qwenturbo|moss4))?-[0-9]+s-[0-9a-f]{12}\.png', name)
+                valid_new = re.fullmatch(r'image-[0-9]{8}-[0-9]{6}-[0-9]+x[0-9]+-[0-9]+steps-cfg[0-9.]+-seed(?:[0-9]+|random-unknown)-[a-z0-9]+(?:-img2img-dn(?:[01](?:\.[0-9]+)?)|-qwenedit)?(?:-(?:6step|turbo|qwenturbo|moss4|moss8))?-[0-9]+s-[0-9a-f]{12}\.png', name)
                 if (not parsed.path.startswith('/image/') or not (valid_old or valid_new)
                     or parse_qs(parsed.query).get('token') != [service.token]
                     or not self.allowed()):

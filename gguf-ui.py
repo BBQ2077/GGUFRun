@@ -1601,7 +1601,7 @@ class App:
         self.lbl.pack(side="left", padx=16)
 
         # --- 模板列（參數組合＋模型自動綁定）---
-        tplf = ttk.LabelFrame(inner, text="參數模板（每個模型一套參數，選到模型自動套用）")
+        tplf = ttk.LabelFrame(inner, text="模板（主模型＋草稿＋參數整組切換；選到已綁定的模型自動套用）")
         tplf.pack(fill="x", padx=10, pady=(6, 0))
         _tr = ttk.Frame(tplf)
         _tr.pack(fill="x", padx=6, pady=4)
@@ -1611,12 +1611,12 @@ class App:
                                    values=["（不使用模板）"])
         self.cb_tpl.pack(side="left", padx=4)
         self.cb_tpl.bind("<<ComboboxSelected>>", self._tpl_on_pick)
-        Tip(self.cb_tpl, "選一個模板 → 立刻把它的參數套到下面的啟動設定與進階取樣設定。\n"
-                         "模板只存「怎麼跑」（ctx / ngl / KV 型別 / 取樣 / 投機 / 載入模式…），\n"
-                         "不含埠、主模型、草稿模型本身。")
+        Tip(self.cb_tpl, "選一個模板 → 主模型、草稿模型（DF）、啟動設定與進階取樣設定整組換成模板內容。\n"
+                         "模板存的是完整組合（主模型 / 草稿 / ctx / ngl / KV 型別 / 取樣 / 投機 / 載入模式…），不含埠。\n"
+                         "反過來選主模型時，會自動套該模型綁定的模板：參數與草稿跟著換，主模型維持你選的。")
         _b = ttk.Button(_tr, text="💾 另存模板", command=self._tpl_save_as)
         _b.pack(side="left", padx=3)
-        Tip(_b, "把「目前畫面上的所有參數」存成一個新的具名模板。")
+        Tip(_b, "把「目前的主模型、草稿模型與畫面上的所有參數」存成一個新的具名模板。")
         _b2 = ttk.Button(_tr, text="🔗 綁定此模型", command=self._tpl_bind)
         _b2.pack(side="left", padx=3)
         Tip(_b2, "把「目前選的主模型」綁到「目前選的模板」。\n"
@@ -3030,16 +3030,66 @@ class App:
         return d
 
     # ---------- 模板（presets.json）：參數組合 + 模型綁定 ----------
-    # 模板「不含」埠、主模型、草稿模型——這三項是「選哪個模型」的一部分，
-    # 不是「這模型要怎麼跑」的參數，所以不進模板。
+    # 模板＝完整組合：啟動設定、進階參數，再加上主模型與草稿模型（DF）的路徑。
+    # 埠不進模板。草稿路徑 "" = 自動配對、"-" = 不使用外掛 DF。
     _TPL_KEYS = ("mode", "ctx", "ngl", "ngld", "ctk", "ctv", "rbud",
-                 "fa", "nkvo", "think", "jinja", "runtime")
+                 "fa", "nkvo", "think", "jinja", "runtime", "model_path", "drafter_path")
 
     def _tpl_snapshot(self):
-        """把「目前 UI 上的啟動設定＋進階參數」抓成一份模板內容。"""
-        snap = {k: self._collect_settings()[k] for k in self._TPL_KEYS}
+        """把「目前 UI 上的主模型、草稿模型、啟動設定＋進階參數」抓成一份模板內容。"""
+        cur = self._collect_settings()
+        snap = {k: cur[k] for k in self._TPL_KEYS}
         snap["adv"] = {k: v.get() for k, v in self.adv.items()}
         return snap
+
+    def _select_drafter_path(self, dp):
+        """依路徑選草稿模型（"" = 自動、"-" = 不使用）；清單沒有的路徑補一項 [記憶]。"""
+        if dp in ("", "-"):
+            self.drafter.set(self._drafters[0] if dp == "" else self._drafters[1])
+            return
+        dp = fix_path(dp)
+        hit = next((k for k, v in self._drafter_map.items()
+                    if v and v != "-" and os.path.normcase(v) == os.path.normcase(dp)), "")
+        if not hit:      # 記住的 DF 不在清單（改檔名／搬位置）→ 補一項，別讓記憶消失
+            label = ("[記憶] " + os.path.basename(dp)
+                     + ("" if os.path.exists(dp) else "（檔案不在）"))
+            if label not in self._drafters:
+                self._drafters.append(label)
+                self._drafter_map[label] = dp
+                self.cb_drafter.config(values=list(self._drafters))
+            hit = label
+        self.drafter.set(hit)
+
+    def _tpl_select_model(self, tpl, name):
+        """手動選模板：把主模型換成模板記錄的那顆。回傳是否換了。"""
+        mp = tpl.get("model_path")
+        if not isinstance(mp, str) or not mp:
+            return False
+        mp = fix_path(mp)
+        hit = next((lab for lab, p in self._model_map.items()
+                    if os.path.normcase(p) == os.path.normcase(mp)), "")
+        if not hit:
+            self._log(f"[模板] ⚠「{name}」記錄的主模型不在清單：{mp}（主模型維持不變）\n")
+            return False
+        if hit == self.model.get():
+            return False
+        self._tpl_picking = True        # 換模型時不要再自動套「該模型綁定的模板」
+        try:
+            self.model.set(hit)
+        finally:
+            self._tpl_picking = False
+        return True
+
+    def _tpl_apply_drafter(self, tpl, mp):
+        """套用模板記錄的草稿模型；格式跟主模型不合（EXL3／GGUF 混用）就不換。"""
+        dp = tpl.get("drafter_path")
+        if not isinstance(dp, str):
+            return False
+        if dp not in ("", "-") and not draft_format_ok(mp, fix_path(dp)):
+            self._log(f"[模板] 草稿 {os.path.basename(dp)} 跟目前主模型格式不同，草稿維持不變\n")
+            return False
+        self._select_drafter_path(dp)
+        return True
 
     def _tpl_apply(self, tpl):
         """把模板內容套到 UI（只套模板有的欄位，缺的不動）。"""
@@ -3146,10 +3196,25 @@ class App:
         if not isinstance(tpl, dict):
             return
         self._tpl_busy = True
-        self._tpl_apply(tpl)
-        self._tpl_busy = False
+        try:
+            # 先換主模型（模板＝完整組合），再套參數與草稿，避免被新模型的綁定模板蓋掉。
+            swapped = self._tpl_select_model(tpl, name)
+            self._tpl_apply(tpl)
+            self._tpl_apply_drafter(tpl, self.model_path())
+            self.tpl.set(name)
+        finally:
+            self._tpl_busy = False
+        if self._sync_model_fn:
+            self._sync_model_fn()
+        self._mark_dirty()
         self._tpl_note = f"[模板] 已套用模板「{name}」\n"
-        self._log(f"[模板] 已套用「{name}」（{len([k for k in (tpl.get('adv') or {}) if (tpl.get('adv') or {}).get(k)])} 項進階參數）\n")
+        _what = []
+        if swapped:
+            _what.append(f"主模型 {os.path.basename(self.model_path())}")
+        if isinstance(tpl.get("drafter_path"), str):
+            _what.append(f"草稿 {self.drafter.get()}")
+        _what.append(f"{len([k for k in (tpl.get('adv') or {}) if (tpl.get('adv') or {}).get(k)])} 項進階參數")
+        self._log(f"[模板] 已套用「{name}」（{'、'.join(_what)}）\n")
 
     # ---------- 模型 ↔ 執行檔 記憶（presets.json 的 "runtime_of"）----------
     # 每顆模型各自記住「上次用哪一套 llama-server」：切模型時自動還原。
@@ -3200,6 +3265,10 @@ class App:
         mp = self.model_path()
         if not mp:
             return
+        if getattr(self, "_tpl_picking", False):
+            # 手動選模板正在換主模型：參數與草稿由 _tpl_on_pick 接手套用。
+            self._tpl_model_key = os.path.normcase(os.path.abspath(mp))
+            return
         model_key = os.path.normcase(os.path.abspath(mp))
         model_changed = model_key != getattr(self, "_tpl_model_key", "")
         if model_changed:
@@ -3220,9 +3289,18 @@ class App:
             src = "預設模板"
         if name and name in self._presets["templates"]:
             self._tpl_busy = True
-            self.tpl.set(name)
-            self._tpl_apply(self._presets["templates"][name])
-            self._tpl_busy = False
+            try:
+                self.tpl.set(name)
+                self._tpl_apply(self._presets["templates"][name])
+                # 選模型自動套模板：主模型保持你選的那顆，草稿跟著模板換。
+                # 「預設模板」是套給沒綁定的任意模型，只有模板記錄的就是這顆時才換草稿。
+                _t = self._presets["templates"][name]
+                _tmp = _t.get("model_path")
+                if src == "此模型綁定" or (isinstance(_tmp, str) and _tmp
+                                            and os.path.normcase(fix_path(_tmp)) == os.path.normcase(mp)):
+                    self._tpl_apply_drafter(_t, mp)
+            finally:
+                self._tpl_busy = False
             self._tpl_note = f"[模板] 已自動套用「{name}」（{src}）\n"
             self._log(f"[模板] 切換模型 → 自動套用{src}「{name}」\n")
         else:
@@ -3360,21 +3438,7 @@ class App:
         # 草稿模型（DF）：存的是路徑（"" = 自動、"-" = 不使用）；顯示字串含檔案大小易變，故不比對字串
         dp = d.get("drafter_path")
         if isinstance(dp, str):
-            if dp in ("", "-"):
-                self.drafter.set(self._drafters[0] if dp == "" else self._drafters[1])
-            else:
-                dp = fix_path(dp)
-                hit = next((k for k, v in self._drafter_map.items()
-                            if v and v != "-" and os.path.normcase(v) == os.path.normcase(dp)), "")
-                if not hit:      # 上次記住的 DF 不在清單（改檔名／搬位置）→ 補一項，別讓記憶消失
-                    label = ("[記憶] " + os.path.basename(dp)
-                             + ("" if os.path.exists(dp) else "（檔案不在）"))
-                    if label not in self._drafters:
-                        self._drafters.append(label)
-                        self._drafter_map[label] = dp
-                        self.cb_drafter.config(values=list(self._drafters))
-                    hit = label
-                self.drafter.set(hit)
+            self._select_drafter_path(dp)
         adv = d.get("adv")
         if isinstance(adv, dict):
             for k, var in self.adv.items():

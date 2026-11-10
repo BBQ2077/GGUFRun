@@ -88,6 +88,107 @@ class TemplateStateTests(unittest.TestCase):
         self.assertEqual(app.adv["lora_scale"].get(), "")
 
 
+class TemplateModelSwitchTests(unittest.TestCase):
+    """模板＝主模型＋草稿＋參數：手動選模板整組換；選模型自動套綁定模板時主模型不動。"""
+
+    GEMMA = r"D:\ExampleProject\LLM-MODELS\Gemma4-26B.gguf"
+    MTP = r"D:\ExampleProject\LLM-MODELS\mtp-gemma-4-26B-A4B-it.gguf"
+    QWEN = r"D:\ExampleProject\LLM-MODELS-EXL3\Swift-Qwen3.8-27B"
+    DFLASH = r"D:\ExampleProject\LLM-MODELS-EXL3\Qwen3.8-27B-DFlash2"
+
+    def make_app(self):
+        app = gguf_ui.App.__new__(gguf_ui.App)
+        app._loading = False
+        app._tpl_busy = False
+        app._rt_busy = False
+        app._model_map = {"Gemma": self.GEMMA, "Qwen": self.QWEN}
+        app.model = Var("Qwen")
+        app.model_path = lambda: app._model_map.get(app.model.get(), "")
+        app._tpl_model_key = os.path.normcase(os.path.abspath(self.QWEN))
+        app._drafters = ["自動", "不使用", "mtp", "dflash"]
+        app._drafter_map = {"自動": "", "不使用": "-", "mtp": self.MTP, "dflash": self.DFLASH}
+        app.drafter = Var("dflash")
+        app.adv = {"lora": Var(""), "lora_scale": Var(""), "temp": Var("1")}
+        app.tpl = Var("EXL3")
+        app.runtime = Var("rt/")
+        app._sync_model_fn = None
+        app._mark_dirty = lambda *_a: None
+        app._log = lambda _text: None
+        app._tpl_default_name = lambda: ""
+        app._rt_restore = lambda _path: False
+        app._presets = {
+            "templates": {
+                "GEMMA": {"model_path": self.GEMMA, "drafter_path": self.MTP, "adv": {"temp": "0.6"}},
+                "EXL3": {"model_path": self.QWEN, "drafter_path": self.DFLASH, "adv": {"temp": "1"}},
+                "OLD": {"adv": {"temp": "0.7"}},
+            },
+            "bind": {os.path.normcase(self.QWEN): "EXL3", os.path.normcase(self.GEMMA): "GEMMA"},
+            "default": "", "runtime_of": {},
+        }
+        app._tpl_apply = lambda tpl: [app.adv[k].set((tpl.get("adv") or {}).get(k, "")) for k in app.adv]
+
+        def fire_model_trace(value, _set=app.model.set):
+            _set(value)
+            app._tpl_on_model_change()
+        app.model.set = fire_model_trace
+        return app
+
+    def fmt_ok(self, main, draft):
+        return not draft or draft == "-" or (draft.endswith(".gguf") == main.endswith(".gguf"))
+
+    def test_picking_template_switches_model_drafter_and_params(self):
+        app = self.make_app()
+        app.tpl.set("GEMMA")
+        with mock.patch.object(gguf_ui, "draft_format_ok", self.fmt_ok), \
+                mock.patch.object(gguf_ui, "fix_path", lambda p: p):
+            app._tpl_on_pick()
+        self.assertEqual(app.model.get(), "Gemma")
+        self.assertEqual(app.drafter.get(), "mtp")
+        self.assertEqual(app.adv["temp"].get(), "0.6")
+        self.assertEqual(app.tpl.get(), "GEMMA")
+
+    def test_picking_template_is_not_overridden_by_the_new_models_binding(self):
+        app = self.make_app()
+        app._presets["bind"][os.path.normcase(self.GEMMA)] = "EXL3"   # 綁的是別的模板
+        app.tpl.set("GEMMA")
+        with mock.patch.object(gguf_ui, "draft_format_ok", self.fmt_ok), \
+                mock.patch.object(gguf_ui, "fix_path", lambda p: p):
+            app._tpl_on_pick()
+        self.assertEqual(app.model.get(), "Gemma")
+        self.assertEqual(app.adv["temp"].get(), "0.6")
+        self.assertEqual(app.tpl.get(), "GEMMA")
+
+    def test_old_template_without_model_keeps_current_model_and_drafter(self):
+        app = self.make_app()
+        app.tpl.set("OLD")
+        app._tpl_on_pick()
+        self.assertEqual(app.model.get(), "Qwen")
+        self.assertEqual(app.drafter.get(), "dflash")
+        self.assertEqual(app.adv["temp"].get(), "0.7")
+
+    def test_choosing_a_model_applies_bound_template_with_its_drafter(self):
+        app = self.make_app()
+        with mock.patch.object(gguf_ui, "draft_format_ok", self.fmt_ok), \
+                mock.patch.object(gguf_ui, "fix_path", lambda p: p):
+            app.model.set("Gemma")
+        self.assertEqual(app.tpl.get(), "GEMMA")
+        self.assertEqual(app.drafter.get(), "mtp")
+        self.assertEqual(app.adv["temp"].get(), "0.6")
+
+    def test_template_drafter_of_other_format_is_not_applied(self):
+        app = self.make_app()
+        app._presets["templates"]["GEMMA"]["drafter_path"] = self.DFLASH   # EXL3 草稿配 GGUF 主模型
+        app.drafter.set("自動")
+        with mock.patch.object(gguf_ui, "draft_format_ok", self.fmt_ok), \
+                mock.patch.object(gguf_ui, "fix_path", lambda p: p):
+            app.model.set("Gemma")
+        self.assertEqual(app.drafter.get(), "自動")
+
+    def test_snapshot_records_model_and_drafter(self):
+        self.assertIn("model_path", gguf_ui.App._TPL_KEYS)
+        self.assertIn("drafter_path", gguf_ui.App._TPL_KEYS)
+
+
 class PortValidationTests(unittest.TestCase):
     def test_valid_port(self):
         self.assertEqual(gguf_ui.parse_port("18435"), 18435)

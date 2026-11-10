@@ -79,12 +79,12 @@ RX 9070 16 GB 實測：Qwen3.8-27B 3.0bpw＋DFlash2，單路寫程式碼約 104�
 
 | Image 控制窗欄位 | 要下載的檔案 | 預設放置位置 |
 |---|---|---|
-| 生圖模型（diffusion） | [qwen-image-2.1-Q4_K_M.gguf](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF/blob/main/qwen-image-2.1-Q4_K_M.gguf) | `IMAGE-MODELS/qwen-image-2.1-Q4_K_M.gguf` |
-| LLM 文字編碼器 | [Qwen3VL-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf) | `IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf` |
-| VAE | [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors) | `IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors` |
-| 視覺 mmproj（Qwen Edit 選配） | [mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf) | `IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` |
+| 生圖模型（diffusion） | [qwen-image-2.1-Q4_K_M.gguf](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF/blob/main/qwen-image-2.1-Q4_K_M.gguf) | `IMAGE-MODELS/qwen-image/qwen-image-2.1-Q4_K_M.gguf` |
+| LLM 文字編碼器 | [Qwen3VL-8B-Instruct-Q4_K_M.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf) | `IMAGE-MODELS/qwen-image/Qwen3VL-8B-Instruct-Q4_K_M.gguf` |
+| VAE | [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors) | `IMAGE-MODELS/qwen-image/qwen_image_2.1_vae_bf16.safetensors` |
+| 視覺 mmproj（Qwen Edit 選配） | [mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/blob/main/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf) | `IMAGE-MODELS/qwen-image/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` |
 
-文字編碼器來源的實際檔名是 `Qwen3VL`（不是有連字號的 `Qwen3-VL`）；選擇其他檔名或放置目錄時，在 Image 控制窗改選**實際檔案路徑**，不要把不同權重只改名當作同一模型。生圖使用的 Qwen3VL 編碼器放在 `IMAGE-MODELS/`，不是 LLM 模式的 `LLM-MODELS/`。參數組合參考 [Unsloth 模型卡](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF)及 [stable-diffusion.cpp 文件](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md)。換用其他生圖模型時依其說明選擇 checkpoint／CLIP-L／CLIP-G／T5XXL 等欄位，無需的欄位留白。
+文字編碼器來源的實際檔名是 `Qwen3VL`（不是有連字號的 `Qwen3-VL`）；選擇其他檔名或放置目錄時，在 Image 控制窗改選**實際檔案路徑**，不要把不同權重只改名當作同一模型。生圖使用的 Qwen3VL 編碼器放在 `IMAGE-MODELS/qwen-image/`，不是 LLM 模式的 `LLM-MODELS/`。參數組合參考 [Unsloth 模型卡](https://huggingface.co/unsloth/Qwen-Image-2.1-GGUF)及 [stable-diffusion.cpp 文件](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md)。換用其他生圖模型時依其說明選擇 checkpoint／CLIP-L／CLIP-G／T5XXL 等欄位，無需的欄位留白。
 
 **3. 啟動**：在主視窗按「Image 模式」，或執行 `py -3 image-ui.py`；核對 runtime 與各模型欄位、啟動 Image Server（預設 `127.0.0.1:18436`），**從 Image 控制窗的按鈕**打開繁中生圖頁面，讓自動存圖服務連接上。填提示詞、加入佇列並按「開始／繼續」，PNG 自動儲存在 `image-output/`。佇列依賴該瀏覽器頁面保持開啟，關頁不會在背景繼續生成。
 
@@ -99,7 +99,12 @@ GGUFRun/
     llama-bonsai/            相容 fork 的 llama-server.exe + 同包 DLL（Bonsai 選配）
     stable-diffusion-cuda12-master-908-88411ef/  sd-server.exe + 同包 DLL（Image）
   LLM-MODELS/                自行下載的 LLM 主模型 GGUF
-  IMAGE-MODELS/              自行下載的生圖權重／編碼器／VAE／選配 mmproj
+  IMAGE-MODELS/              生圖權重，一個模型家族一個資料夾（下拉選單會掃描子資料夾）
+    qwen-image/              Qwen-Image 生圖模型、Qwen3VL 編碼器、mmproj、VAE
+    moss-image/              MOSS 底模與 4／8 步衍生底模、Qwen3.5-9B、tokenizer、flux2 VAE
+      4step/  8step-dmd/     各蒸餾版的 dataspace.safetensors／time_embedding.safetensors
+    loras/                   所有 LoRA 平放在這層（sd-server --lora-model-dir）
+    upscalers/               Hi-res 放大模型
   image-output/              圖片與 Image Server 日誌（執行後產生）
 ```
 
@@ -109,14 +114,17 @@ GGUFRun/
 
 控制窗與生圖頁都是**手動儲存**（跟 LLM 控制窗一樣）：改參數、套模板只影響這次，要留到下次開啟請按控制窗「💾 儲存參數」或生圖頁模板列的「💾 儲存」；未存時會顯示提示。只是測參數就不用存，關掉即還原。
 
-控制窗內建兩個**完整模板**（存在 `image-presets.json`，第一次按儲存才寫檔），選了會一起換 runtime、全部模型欄位、額外指令與參考圖參數；選到對應的生圖模型檔也會自動套用。內建模板可改、可覆蓋，刪掉後不會再自動補回。自己另存模板時可選「完整模板」或只存「怎麼跑」（offload、取樣快取、VAE 分塊、Flash Attention…）。
+控制窗內建三個**完整模板**（存在 `image-presets.json`，第一次按儲存才寫檔），選了會一起換 runtime、全部模型欄位、額外指令與參考圖參數；選到對應的生圖模型檔也會自動套用。內建模板可改、可覆蓋，刪掉後不會再自動補回。自己另存模板時可選「完整模板」或只存「怎麼跑」（offload、取樣快取、VAE 分塊、Flash Attention…）。
 
 | 內建模板 | runtime | 生圖模型 | LLM 編碼器 | VAE | 額外 |
 |---|---|---|---|---|---|
-| Qwen-Image-2.1-Turbo 官方 8 步 | `sd-master-f0aac52-bin-win-rocm-10.1.0-x64` | `qwen-image-2.1-turbo-Q4_K_M.gguf` | `Qwen3VL-8B-Instruct-Q4_K_M.gguf`（＋ mmproj） | `qwen_image_2.1_vae_bf16.safetensors` | 沿用你選的取樣快取 |
-| MOSS-Image 4 步（data-space） | `sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64` | `moss_image_sft_4step_int8_convrot.safetensors` | `Qwen3.5-9B-Q4_K_M.gguf` | `flux2-vae_small.safetensors` | `--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json` |
+| Qwen-Image-2.1-Turbo 官方 8 步 | `sd-master-f0aac52-bin-win-rocm-10.1.0-x64` | `qwen-image/qwen-image-2.1-turbo-Q4_K_M.gguf` | `Qwen3VL-8B-Instruct-Q4_K_M.gguf`（＋ mmproj） | `qwen_image_2.1_vae_bf16.safetensors` | 沿用你選的取樣快取 |
+| MOSS-Image 4 步（data-space） | `sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64` | `moss-image/moss_image_sft_4step_int8_convrot.safetensors` | `Qwen3.5-9B-Q4_K_M.gguf` | `flux2-vae_small.safetensors` | `--tokenizer IMAGE-MODELS/moss-image/tokenizer_qwen3.5.json` |
+| MOSS-Image 8 步 DMD（data-space） | 同上 | `moss-image/moss_image_sft_8step_int8_convrot.safetensors` | 同上 | 同上 | 同上 |
 
-生圖頁另有自己的模板列（內建「頁面預設」「Qwen Turbo 8 步」「MOSS 4 步」，可另存／刪除自訂模板），管的是步數、CFG、取樣器、加速排程、LoRA 勾選與強度等每張圖的參數。開頁時若載入的是 Qwen Turbo 或 MOSS 4 步模型，會自動套用對應模板（不寫入存檔）。
+生圖頁另有自己的模板列（內建「頁面預設」「Qwen Turbo 8 步」「MOSS 4 步」「MOSS 8 步 DMD」，可另存／刪除自訂模板），管的是步數、CFG、取樣器、加速排程、LoRA 勾選與強度等每張圖的參數。開頁時若載入的是 Qwen Turbo、MOSS 4 步或 MOSS 8 步模型，會自動套用對應模板（不寫入存檔）。
+
+LLM 主視窗的模板是**完整組合**：主模型、草稿模型（DF）、啟動設定與進階參數一起存。從模板下拉手動選一個模板，主模型與草稿會跟著換成模板記錄的那組；反過來選主模型時，會自動套用該模型綁定的模板，參數與草稿跟著換、主模型維持你選的（草稿格式與主模型不合時不換）。沒記錄主模型的模板只套參數。
 
 ## Qwen-Image-2.1-Turbo 官方 8 步（生圖頁「加速排程」）
 
@@ -137,10 +145,10 @@ shift 1.0、不隨解析度位移；sigma 欄可自行微調，「還原官方�
 需要準備：
 
 - runtime：`RUNTIMES/sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/`（stable-diffusion.cpp master `b13a482`＋同目錄 `ggufrun-moss-dataspace.patch`，ROCm 10.1.0、gfx1201；來源與 SHA-256 見 `rocm-runtime.json`）。
-- 底模：`IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors`，是 MOSS-Image-SFT int8 底模換上 4 步版 fp32 `time_embedding` 的衍生檔。
-- `IMAGE-MODELS/moss-4step/dataspace.safetensors`（step code 與 latent mix Q），生圖頁每次請求以 `extra_sample_args` 帶 `dataspace=…` 啟用，只對 MOSS 模型生效，並自動關閉 spectrum 快取。
+- 底模：`IMAGE-MODELS/moss-image/moss_image_sft_4step_int8_convrot.safetensors`，是 MOSS-Image-SFT int8 底模換上 4 步版 fp32 `time_embedding` 的衍生檔。
+- `IMAGE-MODELS/moss-image/4step/dataspace.safetensors`（step code 與 latent mix Q），生圖頁每次請求以 `extra_sample_args` 帶 `dataspace=…` 啟用，只對 MOSS 模型生效，並自動關閉 spectrum 快取。
 - LoRA：`IMAGE-MODELS/loras/MOSS-Image-SFT-4-steps-lora.safetensors`，**必須套用，沒套圖會整張糊掉**。生圖頁的「MOSS 4 步」模板（載入 MOSS 模型開頁時會自動套用）會在 LoRA 清單幫你勾好（強度 1，執行時套用、不合併進底模），要取消可自己取消；選 MOSS 4 步卻沒勾時，加入佇列會提醒。
-- LLM `Qwen3.5-9B-Q4_K_M.gguf`、VAE `flux2-vae_small.safetensors`、`tokenizer_qwen3.5.json`；控制窗選「MOSS-Image 4 步」模板即全部帶入。
+- LLM `moss-image/Qwen3.5-9B-Q4_K_M.gguf`、VAE `moss-image/flux2-vae_small.safetensors`、`moss-image/tokenizer_qwen3.5.json`；控制窗選「MOSS-Image 4 步」模板即全部帶入。
 
 本機 1024² 實測：取樣約 22 秒（含載入約 37 秒），黑板菜單文字正確。
 
@@ -148,7 +156,21 @@ shift 1.0、不隨解析度位移；sigma 欄可自行微調，「還原官方�
 
 **自己重編 runtime**：`tools/moss4/build-sd.bat`（不動系統環境，需要 VS2022 C++ 工作負載、git、uv）。它會在 `tools/moss4/.work/` 用 uv 建 Python 3.12 venv、從 AMD 官方源 `https://stable.repo.amd.com/rocm/whl-next/` 裝 `rocm[libraries,devel]==10.1.0`（含 HIP／clang），抓 stable-diffusion.cpp `b13a482` 並套上 `ggufrun-moss-dataspace.patch`，仿官方 CI 以 `-DSD_HIPBLAS=ON -DGPU_TARGETS=gfx1201` 編譯，最後由 `package_runtime.py` 放進 `RUNTIMES/` 並寫好 SHA-256 清單。編完 `.work` 約 4.5 GB 可刪。執行時 PATH 需含 runtime 目錄與 `RUNTIMES/rocm-sdk-10.1.0/bin`（控制窗會自動設定）。
 
-**自己做 4 步底模**：把 [akhaliq/MOSS-Image-SFT-4-steps](https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps) 的 `time_embedding.safetensors` 放到 `IMAGE-MODELS/moss-4step/`，執行 `python tools/moss4/make_moss_4step_base.py`，會從 `moss_image_sft_int8_convrot.safetensors` 產生 `moss_image_sft_4step_int8_convrot.safetensors`（約 5.4 GB）。
+**自己做 4 步底模**：把 [akhaliq/MOSS-Image-SFT-4-steps](https://huggingface.co/akhaliq/MOSS-Image-SFT-4-steps) 的 `time_embedding.safetensors` 放到 `IMAGE-MODELS/moss-image/4step/`，執行 `py -3 tools/moss4/make_moss_4step_base.py`，會從 `moss-image/moss_image_sft_int8_convrot.safetensors` 產生 `moss_image_sft_4step_int8_convrot.safetensors`（約 5.4 GB）。
+
+## MOSS-Image 8 步 DMD（實驗性，同一套 moss4 runtime）
+
+[lodestones/MOSS-Image-SFT-8-steps-dmd](https://huggingface.co/lodestones/MOSS-Image-SFT-8-steps-dmd) 是 MOSS-Image-SFT（50 步、CFG 3）以 data-space DMD 蒸餾成 8 步、不用 CFG 的版本（EMA update 2600，作者標示仍在訓練中）。取樣迴圈與 4 步版相同，只是 `dataspace.safetensors` 帶 8 個 step code，moss4 runtime 直接支援，不用重編。模型卡註明訓練描述是精簡 JSON 的 `scene_graph`，一般文字提示也能用。
+
+| 檔案 | 來源 | 放置位置 |
+|---|---|---|
+| `dataspace.safetensors`、`time_embedding.safetensors` | 模型倉庫根目錄 | `IMAGE-MODELS/moss-image/8step-dmd/` |
+| `lora.safetensors`（建議強度 1） | 同上 | `IMAGE-MODELS/loras/MOSS-Image-SFT-8-steps-dmd-lora.safetensors` |
+| `lora_latest.safetensors`（選配，建議強度 0.7） | 同上 | `IMAGE-MODELS/loras/MOSS-Image-SFT-8-steps-dmd-lora_latest.safetensors` |
+
+`transformer/`（fp32 完整權重，約 20 GB）與 `generator.safetensors` 不需要。下載後執行 `py -3 tools/moss4/make_moss_4step_base.py 8` 產生 `IMAGE-MODELS/moss-image/moss_image_sft_8step_int8_convrot.safetensors`（約 5.4 GB）。控制窗選「MOSS-Image 8 步 DMD」模板、生圖頁選「MOSS 8 步」排程（或開頁時自動套用）即可；LoRA 由生圖頁模板勾好。存圖檔名標 `-moss8`。
+
+本機 1024² 實測（RX 9070，模型載入後）：4 步每張約 11 秒、8 步約 20 秒。同提示同 seed 對照，大字、短句與中文招牌兩者都正確；多行小字的海報 8 步較穩（4 步換 seed 會出現錯字），皮膚、雨滴等細節與換 seed 的構圖變化也是 8 步較好。
 
 ## 可選功能與授權
 

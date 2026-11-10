@@ -31,8 +31,8 @@ input[type="checkbox"]{width:auto;vertical-align:middle;accent-color:#6bc6f0;mar
 <details id="hires-fields"><summary>進階設定：Hi-res 高解析度（文字生圖＋圖生圖）</summary><label><input id="enable-hr" type="checkbox"> <span id="hr-label">啟用 Hi-res：先放大再做第二輪去噪</span></label><div class="fields" id="hr-options"><div><label for="hr-upscaler">放大方法</label><select id="hr-upscaler" disabled><option value="Lanczos">Lanczos（內建）</option><option value="Nearest">Nearest（內建）</option></select></div><div><label for="hr-scale">倍率</label><select id="hr-scale" disabled><option value="1">1×（同尺寸升畫質）</option><option value="1.5">1.5×</option><option value="2" selected>2×</option><option value="3">3×</option><option value="4">4×</option></select></div><div><label for="hr-steps">第二輪步數</label><input id="hr-steps" type="number" min="1" max="80" value="10" disabled></div><div><label for="hr-denoise">第二輪去噪強度</label><input id="hr-denoise" type="number" min="0.01" max="1" step="0.01" value="0.5" disabled></div><div><label><input id="hr-turbo-sigma" type="checkbox" disabled> <span id="hr-turbo-label">第二輪沿用第一輪 turbo sigma</span></label></div></div><p class="help" id="upscaler-note"></p><p class="help" id="hr-help"></p></details>
 <div class="fields"><div><label for="steps">取樣步數 <span class="info"><button class="hint" type="button" aria-label="說明：steps">?</button><span class="hinttext" role="tooltip">逐步把雜訊轉成畫面；20 步是此介面的預設（與 stable-diffusion.cpp／Unsloth 官方範例一致）。實際適合的步數依 GGUF 模型文件、速度和出圖效果調整。</span></span></label><input id="steps" type="number" min="1" max="150" value="20" required></div><div><label for="cfg">CFG 引導強度 <span class="info"><button class="hint" type="button" aria-label="說明：cfg">?</button><span class="hinttext" role="tooltip">控制遵循描述的程度；1 是此介面的預設起點，不是所有 GGUF 模型的最佳值。請依實際模型文件與出圖結果調整。</span></span></label><input id="cfg" type="number" min="0" max="30" step="0.1" value="1" required></div>
 <div><label for="seed">隨機種子 <span class="info"><button class="hint" type="button" aria-label="說明：seed">?</button><span class="hinttext" role="tooltip">-1 代表送出前自動產生一個確定的隨機種子，方便寫入檔名和重現；重試同一筆會沿用種子。指定相同整數也仍需相同模型／參數，不保證跨環境完全一致。</span></span></label><input id="seed" type="number" min="-1" max="4294967295" step="1" value="-1" required></div><div><label for="sampler">取樣器 <span class="info"><button class="hint" type="button" aria-label="說明：sampler">?</button><span class="hinttext" role="tooltip">Euler 為此介面的預設。若當前模型／伺服器不提供 Euler，請改選可用的取樣器；以實際回傳清單為準。</span></span></label><select id="sampler"><option value="">模型預設</option><option value="Euler" selected>Euler（預設）</option></select></div></div>
-<label for="turbo">加速排程（Turbo／蒸餾模型）</label><select id="turbo"><option value="off" selected>一般（依步數自動排程）</option><option value="qwen-turbo">Qwen-Image-2.1-Turbo · 官方 8 步 sigma</option><option value="moss-4step">MOSS-Image-SFT-4-steps · data-space 4 步</option></select><div id="turbo-sigma-box" hidden><label for="turbo-sigmas">Turbo sigma（由大到小，逗號分隔；不含結尾 0；個數＝步數）</label><div class="sigma-row"><input id="turbo-sigmas" type="text" spellcheck="false" autocomplete="off"><button id="turbo-sigma-reset" class="secondary" type="button">還原官方</button></div></div><p id="turbo-help" class="help"></p><button id="release-lora" class="secondary" type="button" disabled>♻ 釋放 LoRA 記憶體（重啟 Image Server）</button><p id="lora-memory" class="help">LoRA 一旦被伺服器套用就會常駐在執行中的行程（量化權重走 at_runtime，實測多佔數 GB）；把上面選單切回「關閉」只是下一張任務不再套用，不會歸還記憶體。偵測到常駐 LoRA 時可按此鈕重啟 server 釋放；佇列與已存圖片不受影響，但需要重新載入模型。</p>
-<details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次。MOSS 4 步排程需要自己勾選「MOSS-Image-SFT-4-steps-lora」（強度 1）；不會自動掛。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
+<label for="turbo">加速排程（Turbo／蒸餾模型）</label><select id="turbo"><option value="off" selected>一般（依步數自動排程）</option><option value="qwen-turbo">Qwen-Image-2.1-Turbo · 官方 8 步 sigma</option><option value="moss-4step">MOSS-Image-SFT-4-steps · data-space 4 步</option><option value="moss-8step">MOSS-Image-SFT-8-steps-dmd · data-space 8 步</option></select><div id="turbo-sigma-box" hidden><label for="turbo-sigmas">Turbo sigma（由大到小，逗號分隔；不含結尾 0；個數＝步數）</label><div class="sigma-row"><input id="turbo-sigmas" type="text" spellcheck="false" autocomplete="off"><button id="turbo-sigma-reset" class="secondary" type="button">還原官方</button></div></div><p id="turbo-help" class="help"></p><button id="release-lora" class="secondary" type="button" disabled>♻ 釋放 LoRA 記憶體（重啟 Image Server）</button><p id="lora-memory" class="help">LoRA 一旦被伺服器套用就會常駐在執行中的行程（量化權重走 at_runtime，實測多佔數 GB）；把上面選單切回「關閉」只是下一張任務不再套用，不會歸還記憶體。偵測到常駐 LoRA 時可按此鈕重啟 server 釋放；佇列與已存圖片不受影響，但需要重新載入模型。</p>
+<details id="lora-fields"><summary>進階設定：多 LoRA 清單（可同時勾選多個，預設收合）</summary><p class="help">勾選後才會送出，每個 LoRA 可個別設定強度（0～2）。同一檔案重複選取只套用一次。MOSS 4／8 步排程需要勾選對應的 LoRA（「MOSS-Image-SFT-4-steps-lora」或「MOSS-Image-SFT-8-steps-dmd-lora」，強度 1）；選內建 MOSS 模板會幫你勾好，送出時不會另外偷掛。同時套用多顆會增加載入時間與顯存壓力，8 GB 顯卡建議先用較小尺寸測試；LoRA 是否相容仍依該權重說明。</p><div id="lora-list" class="lora-list"></div><p id="lora-warning" class="help"></p></details>
 <p id="sampler-warning" class="help"></p><p class="help">每次加入任務，都會固定當下的描述、尺寸、步數、CFG、種子與取樣器。要換模型請回控制窗停止並重啟 server；佇列中的任務不會因此自動改參數。</p>
 <button class="action" id="generate" type="submit">＋ 加入單張佇列</button></form>
 <label for="bulk">一次貼上多筆描述（一行一筆） <span class="info"><button class="hint" type="button" aria-label="說明：bulk">?</button><span class="hinttext" role="tooltip">例如貼上 10 行描述，按「批量加入」即可排入 10 張。每一行都使用此刻上方相同的尺寸、步數、CFG、種子等設定；空白行會忽略。不要在同一筆描述內換行。</span></span></label><textarea id="bulk" placeholder="第一張的描述&#10;第二張的描述&#10;第三張的描述"></textarea><button id="add-bulk" type="button">批量加入</button></section>
@@ -97,7 +97,7 @@ function retryUpscalers(){
 async function discover(){
   try{const r=await fetch('/sdapi/v1/options');if(r.ok){const d=await r.json();const name=d.sd_model_checkpoint||'未命名模型';
     $('model').textContent='已載入：'+name;
-    const auto=/moss.*4.?step/i.test(name)?'moss-4step':(/qwen/i.test(name)&&/turbo/i.test(name)&&!/viggle/i.test(name))?'qwen-turbo':null;
+    const auto=/moss.*8.?step/i.test(name)?'moss-8step':/moss.*4.?step/i.test(name)?'moss-4step':(/qwen/i.test(name)&&/turbo/i.test(name)&&!/viggle/i.test(name))?'qwen-turbo':null;
     if(auto&&$('turbo').value!==auto){const clean=!formIsDirty();applySnapshot(BUILTIN_TEMPLATES['builtin:'+auto].values);
       renderTemplates('builtin:'+auto);if(clean){formBaseline=formSnapshot();autoTemplate=BUILTIN_TEMPLATES['builtin:'+auto].label;}updateDirty();
       $('model').textContent+='（已依模型自動套用「'+BUILTIN_TEMPLATES['builtin:'+auto].label+'」）';}}}
@@ -178,11 +178,19 @@ async function ensureMode(mode){
 // scheduler has shift 1.0 and no dynamic shifting, so these are used as-is (resolution
 // independent) and the terminal 0 is appended. num_inference_steps alone does not override them.
 const QWEN_TURBO_SIGMAS=[1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568];
-// akhaliq/MOSS-Image-SFT-4-steps: LoRA stays unmerged (applied at runtime) and the server's
-// data-space sampler runs x = z + Q·x0 ; v = T(x, step_code) ; x0 = z - v (GGUFRun sd.cpp patch).
+// akhaliq/MOSS-Image-SFT-4-steps and lodestones/MOSS-Image-SFT-8-steps-dmd: LoRA stays unmerged
+// (applied at runtime) and the server's data-space sampler runs x = z + Q·x0 ; v = T(x, step_code) ;
+// x0 = z - v (GGUFRun sd.cpp patch). Step count = number of step codes in dataspace.safetensors.
 const MOSS4_LORA='MOSS-Image-SFT-4-steps-lora.safetensors';
-const MOSS4_DATASPACE='IMAGE-MODELS/moss-4step/dataspace.safetensors';
+const MOSS4_DATASPACE='IMAGE-MODELS/moss-image/4step/dataspace.safetensors';
 const MOSS4_STEPS=4;
+const MOSS8_LORA='MOSS-Image-SFT-8-steps-dmd-lora.safetensors';
+const MOSS8_DATASPACE='IMAGE-MODELS/moss-image/8step-dmd/dataspace.safetensors';
+const MOSS8_STEPS=8;
+const MOSS_MODES={
+  'moss-4step':{label:'MOSS 4 步',steps:MOSS4_STEPS,dataspace:MOSS4_DATASPACE,lora:MOSS4_LORA,loraTest:/moss.*4.?steps?/i},
+  'moss-8step':{label:'MOSS 8 步',steps:MOSS8_STEPS,dataspace:MOSS8_DATASPACE,lora:MOSS8_LORA,loraTest:/moss.*8.?steps?/i},
+};
 function parseTurboSigmas(text){
   const values=String(text||'').split(/[\s,，、]+/).filter(Boolean).map(Number);
   if(!values.length)throw Error('Turbo sigma 不可為空；按「還原官方」可填回 8 步官方值');
@@ -200,7 +208,10 @@ const TURBO_HELP={
     +'想實驗可直接改 sigma 欄位（官方註明其他排程未經評估）。Hi-res 勾「第二輪沿用 turbo sigma」時，第二輪會用同一組 sigma 並依第二輪去噪強度截掉前段。文字生圖、Img2Img、Qwen Edit 皆可用。',
   'moss-4step':'給 <b>MOSS-Image-SFT-4-steps</b>：控制窗載入 moss_image_sft_4step_int8_convrot ＋ moss4 runtime（b13a482-moss4）。'
     +'選「MOSS-Image 4 步」模板會順便勾選 LoRA <b>MOSS-Image-SFT-4-steps-lora</b>（強度 1；伺服器在執行時套用、不合併），沒勾會很糊，要取消可自己在下方 LoRA 清單取消。送出時帶 dataspace 參數讓伺服器走官方 data-space 迴圈；固定 4 步、建議 CFG 1、不用負面提示。'
-    +'Img2Img 為<b>實驗性</b>：改動強度越低越貼近原圖構圖與光影，但文字與細節仍會被重畫（實測 0.1 只跑最後 1 個 step code，仍無法保留原字）。要忠實改圖請改用 Qwen-Image-2.1（Turbo）Img2Img／Qwen Edit。不支援 Qwen Edit。'
+    +'Img2Img 為<b>實驗性</b>：改動強度越低越貼近原圖構圖與光影，但文字與細節仍會被重畫（實測 0.1 只跑最後 1 個 step code，仍無法保留原字）。要忠實改圖請改用 Qwen-Image-2.1（Turbo）Img2Img／Qwen Edit。不支援 Qwen Edit。',
+  'moss-8step':'給 <b>MOSS-Image-SFT-8-steps-dmd</b>（lodestones，data-space DMD 蒸餾，EMA update 2600）：控制窗載入 moss_image_sft_8step_int8_convrot ＋ moss4 runtime（b13a482-moss4）。'
+    +'選「MOSS-Image 8 步 DMD」模板會勾選 LoRA <b>MOSS-Image-SFT-8-steps-dmd-lora</b>（強度 1）；另有 <b>-lora_latest</b>（較新的未平均權重，模型卡建議強度 0.7）可自己換。送出時帶 8 步 dataspace 參數；固定 8 步、CFG 1、不用負面提示。'
+    +'模型卡註明訓練用的是精簡 JSON 的 scene_graph 描述，一般文字提示也能用。Img2Img 同 4 步版為實驗性，不支援 Qwen Edit。'
 };
 /*TURBO_SCHEDULE_END*/
 const LORA_MAX_STRENGTH=2;
@@ -308,6 +319,9 @@ async function sendImage(body,task){
       }else if(turbo==='moss-4step'){
         sample_params.sample_steps=MOSS4_STEPS;sample_params.sample_method='euler';
         sample_params.extra_sample_args='dataspace='+MOSS4_DATASPACE;
+      }else if(turbo==='moss-8step'){
+        sample_params.sample_steps=MOSS8_STEPS;sample_params.sample_method='euler';
+        sample_params.extra_sample_args='dataspace='+MOSS8_DATASPACE;
       }
       const native={prompt:body.prompt||(mode==='img2img'?'the same image':''),negative_prompt:body.negative_prompt||'',
         width:body.width,height:body.height,seed:body.seed,batch_count:1,init_image:initImage,
@@ -321,7 +335,7 @@ async function sendImage(body,task){
       }
       const loras=[...(Array.isArray(body.lora)?body.lora:[])];
       if(loras.length)native.lora=loras;
-      image=await submitNative(native,turbo==='moss-4step'?'MOSS 4 步任務':turbo?'Turbo '+(sigmaList.length-1)+' 步任務':'原生圖生圖 Hi-res');
+      image=await submitNative(native,MOSS_MODES[turbo]?MOSS_MODES[turbo].label+'任務':turbo?'Turbo '+(sigmaList.length-1)+' 步任務':'原生圖生圖 Hi-res');
     }else{
       const endpoint=mode==='img2img'?'/sdapi/v1/img2img':'/sdapi/v1/txt2img';
       if(!Array.isArray(requestBody.lora)||!requestBody.lora.length)delete requestBody.lora;
@@ -469,13 +483,15 @@ function draftBody(){
   const turbo=$('turbo').value;
   if(turbo==='qwen-turbo'){
     body.turbo=turbo;body.turboSigmas=turboSigmas();body.steps=body.turboSigmas.length-1;body.sampler_name='Euler';
-  }else if(turbo==='moss-4step'){
-    if(body.mode==='qwen_edit')throw Error('MOSS 4 步不支援 Qwen Edit（MOSS 沒有參考圖修圖分支）；請改用文字生圖或 Img2Img');
-    body.turbo=turbo;body.steps=MOSS4_STEPS;body.sampler_name='Euler';
+  }else if(MOSS_MODES[turbo]){
+    const mm=MOSS_MODES[turbo];
+    if(body.mode==='qwen_edit')throw Error(mm.label+'不支援 Qwen Edit（MOSS 沒有參考圖修圖分支）；請改用文字生圖或 Img2Img');
+    body.turbo=turbo;body.steps=mm.steps;body.sampler_name='Euler';
   }
   const loras=loraEntriesFromControls();
-  draftWarning=turbo==='moss-4step'&&!loras.some(item=>/moss/i.test(item.path))
-    ?'（提醒：MOSS 4 步排程沒有勾選 MOSS 4 步 LoRA，畫面通常會糊或失真；如是刻意測試可忽略）':'';
+  const mossMode=MOSS_MODES[turbo];
+  draftWarning=mossMode&&!loras.some(item=>mossMode.loraTest.test(loraBase(item.path)))
+    ?'（提醒：'+mossMode.label+'排程沒有勾選 '+mossMode.label+' LoRA，畫面通常會糊或失真；如是刻意測試可忽略）':'';
   if(loras.length)body.lora=loras;
   return body;
 }
@@ -597,8 +613,8 @@ function syncTurbo(fromUser){
     if(!$('turbo-sigmas').value.trim())$('turbo-sigmas').value=QWEN_TURBO_SIGMAS.join(', ');
     try{$('steps').value=String(parseTurboSigmas($('turbo-sigmas').value).length);}catch(e){}
     $('steps').readOnly=true;if(fromUser)$('cfg').value='1';
-  }else if(t==='moss-4step'){
-    $('steps').value=String(MOSS4_STEPS);$('steps').readOnly=true;if(fromUser)$('cfg').value='1';
+  }else if(MOSS_MODES[t]){
+    $('steps').value=String(MOSS_MODES[t].steps);$('steps').readOnly=true;if(fromUser)$('cfg').value='1';
   }else{
     $('steps').readOnly=false;if(lastTurbo!=='off')$('steps').value=normalSteps;
   }
@@ -659,6 +675,8 @@ const BUILTIN_TEMPLATES={
     steps:String(QWEN_TURBO_SIGMAS.length),cfg:'1',sampler:'euler',negative:''}},
   'builtin:moss-4step':{label:'內建・MOSS-Image 4 步（data-space）',values:{turbo:'moss-4step',steps:String(MOSS4_STEPS),cfg:'1',
     sampler:'euler',negative:'','enable-hr':false,loras:[{path:MOSS4_LORA,multiplier:1}]}},
+  'builtin:moss-8step':{label:'內建・MOSS-Image 8 步 DMD（data-space）',values:{turbo:'moss-8step',steps:String(MOSS8_STEPS),cfg:'1',
+    sampler:'euler',negative:'','enable-hr':false,loras:[{path:MOSS8_LORA,multiplier:1}]}},
 };
 // Values whose options/LoRA list are not loaded from the server yet stay «pending» and are
 // reported as-is by formSnapshot, so a late-loading list never looks like an unsaved edit.

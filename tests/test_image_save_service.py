@@ -77,6 +77,7 @@ class SaveServiceTests(unittest.TestCase):
                         return json.load(response)['filename']
                 self.assertRegex(save(steps=8, turbo='qwen-turbo'), r'-8steps-.*-euler-qwenturbo-1s-[0-9a-f]{12}\.png$')
                 self.assertRegex(save(steps=4, turbo='moss-4step'), r'-4steps-.*-euler-moss4-1s-[0-9a-f]{12}\.png$')
+                self.assertRegex(save(steps=8, turbo='moss-8step'), r'-8steps-.*-euler-moss8-1s-[0-9a-f]{12}\.png$')
                 # 沒選加速排程就不加標籤；舊的 viggle 欄位已不再產生標籤。
                 self.assertRegex(save(steps=6, viggle=True), r'-euler-1s-[0-9a-f]{12}\.png$')
                 self.assertRegex(save(steps=6), r'-euler-1s-[0-9a-f]{12}\.png$')

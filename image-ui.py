@@ -105,10 +105,10 @@ def local_rocm_launch_note(executable):
 SETTINGS = BASE / 'image-settings.json'
 DEFAULT_RUNTIME = 'stable-diffusion-cuda12-master-929-3f8527a/'
 FILES = {
-    'diffusion': 'IMAGE-MODELS/qwen-image-2.1-UC-Q4_K_M.gguf',
-    'llm': 'IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
-    'vae': 'IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors',
-    'llm_vision': 'IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
+    'diffusion': 'IMAGE-MODELS/qwen-image/qwen-image-2.1-UC-Q4_K_M.gguf',
+    'llm': 'IMAGE-MODELS/qwen-image/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+    'vae': 'IMAGE-MODELS/qwen-image/qwen_image_2.1_vae_bf16.safetensors',
+    'llm_vision': 'IMAGE-MODELS/qwen-image/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
 }
 FIELDS = (
     ('model', '--model', '完整 Checkpoint', '整合式模型；與獨立 diffusion 二選一'),
@@ -1039,20 +1039,34 @@ def default_presets():
 MOSS4_RUNTIME = 'sd-master-b13a482-moss4-gfx1201-rocm-10.1.0-x64/'
 TPL_QWEN_TURBO = 'Qwen-Image-2.1-Turbo 官方 8 步'
 TPL_MOSS4 = 'MOSS-Image 4 步（data-space）'
+TPL_MOSS8 = 'MOSS-Image 8 步 DMD（data-space）'
 FULL_TEMPLATE_MODEL_KEYS = ('model', 'diffusion', 'llm', 'llm_vision', 'clip_l', 'clip_g', 't5xxl', 'vae')
 
 
 def builtin_templates():
     def models(**chosen):
         return {key: chosen.get(key, '') for key in FULL_TEMPLATE_MODEL_KEYS}
+
+    def moss(steps):
+        return {
+            'runtime': MOSS4_RUNTIME,
+            'models': models(diffusion=f'IMAGE-MODELS/moss-image/moss_image_sft_{steps}step_int8_convrot.safetensors',
+                             llm='IMAGE-MODELS/moss-image/Qwen3.5-9B-Q4_K_M.gguf',
+                             vae='IMAGE-MODELS/moss-image/flux2-vae_small.safetensors'),
+            'extra_args': '--tokenizer IMAGE-MODELS/moss-image/tokenizer_qwen3.5.json',
+            'ref_image_args': '',
+            'offload': True, 'cache_mode': 'off', 'cache_threshold': '', 'cache_warmup': '',
+            'vae_tiling': True, 'vae_relative_tile_size': '0.5',
+            'diffusion_fa': True, 'conditioning_cache_size': 'default',
+        }
     return {
         # 官方 sigma 由網頁「加速排程」逐次帶給伺服器；這裡負責模型與啟動參數。
         TPL_QWEN_TURBO: {
             'runtime': ROCM_10_RUNTIME + '/',
-            'models': models(diffusion='IMAGE-MODELS/qwen-image-2.1-turbo-Q4_K_M.gguf',
-                             llm='IMAGE-MODELS/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
-                             llm_vision='IMAGE-MODELS/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
-                             vae='IMAGE-MODELS/qwen_image_2.1_vae_bf16.safetensors'),
+            'models': models(diffusion='IMAGE-MODELS/qwen-image/qwen-image-2.1-turbo-Q4_K_M.gguf',
+                             llm='IMAGE-MODELS/qwen-image/Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+                             llm_vision='IMAGE-MODELS/qwen-image/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf',
+                             vae='IMAGE-MODELS/qwen-image/qwen_image_2.1_vae_bf16.safetensors'),
             'extra_args': '',
             'ref_image_args': REF_IMAGE_ARGS_DEFAULT,
             # 不帶 cache_mode：沿用你自己選的取樣快取（例如 spectrum）；要固定就按 💾 存回模板。
@@ -1062,23 +1076,16 @@ def builtin_templates():
         },
         # MOSS 4 步：fp32 time-embedding 底模＋GGUFRun moss4 runtime（data-space 取樣器）。
         # 4 步 LoRA 不在這裡：網頁 LoRA 清單自己勾（伺服器執行時套用、不合併）。
-        TPL_MOSS4: {
-            'runtime': MOSS4_RUNTIME,
-            'models': models(diffusion='IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors',
-                             llm='IMAGE-MODELS/Qwen3.5-9B-Q4_K_M.gguf',
-                             vae='IMAGE-MODELS/flux2-vae_small.safetensors'),
-            'extra_args': '--tokenizer IMAGE-MODELS/tokenizer_qwen3.5.json',
-            'ref_image_args': '',
-            'offload': True, 'cache_mode': 'off', 'cache_threshold': '', 'cache_warmup': '',
-            'vae_tiling': True, 'vae_relative_tile_size': '0.5',
-            'diffusion_fa': True, 'conditioning_cache_size': 'default',
-        },
+        TPL_MOSS4: moss(4),
+        # MOSS 8 步 DMD（lodestones）：同一套 runtime，底模換 8 步 fp32 time-embedding。
+        TPL_MOSS8: moss(8),
     }
 
 
 BUILTIN_BINDS = {
     'qwen-image-2.1-turbo-q4_k_m.gguf': TPL_QWEN_TURBO,
     'moss_image_sft_4step_int8_convrot.safetensors': TPL_MOSS4,
+    'moss_image_sft_8step_int8_convrot.safetensors': TPL_MOSS8,
 }
 
 
@@ -1376,9 +1383,9 @@ class ImageApp:
         self.lbl_tpl.pack(side='left', padx=10)
         hint(_tr2, '一般模板只存「怎麼跑」：offload／取樣加速／threshold／warmup／VAE 分塊／'
                    'Flash Attention／conditioning cache。不含埠、模型路徑本身。\n'
-                   '完整模板（內建「Qwen-Image-2.1-Turbo 官方 8 步」「MOSS-Image 4 步」，或另存時選「是」）'
+                   '完整模板（內建「Qwen-Image-2.1-Turbo 官方 8 步」「MOSS-Image 4 步」「MOSS-Image 8 步 DMD」，或另存時選「是」）'
                    '還會一起換 runtime、全部模型欄位、額外指令與參考圖參數。\n'
-                   '內建綁定：選到 qwen-image-2.1-turbo-Q4_K_M.gguf 或 moss_image_sft_4step_int8_convrot '
+                   '內建綁定：選到 qwen-image-2.1-turbo-Q4_K_M.gguf、moss_image_sft_4step_int8_convrot 或 moss_image_sft_8step_int8_convrot '
                    '會自動套對應模板；刪掉內建模板後不會再補回。\n'
                    '切到「綁定」的模型會自動套用該模板；沒有綁定的模型套用「預設模板」。\n'
                    '手動改上面任何一個模板欄位不會自動寫檔；按「💾 儲存參數」才會存回目前選的模板。'

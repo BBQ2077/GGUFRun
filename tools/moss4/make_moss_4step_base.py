@@ -1,16 +1,30 @@
-"""Build the MOSS-Image 4-step base for the moss4 runtime.
+"""Build a MOSS-Image few-step base for the moss4 runtime.
 
-Copies IMAGE-MODELS/moss_image_sft_int8_convrot.safetensors and swaps in the fp32 time-embedding /
-modulation-bias tensors from akhaliq/MOSS-Image-SFT-4-steps (time_embedding.safetensors, put it in
-IMAGE-MODELS/moss-4step/). Output: IMAGE-MODELS/moss_image_sft_4step_int8_convrot.safetensors.
-The 4-step LoRA stays a separate file and is applied unmerged at runtime by sd.cpp.
+Copies IMAGE-MODELS/moss-image/moss_image_sft_int8_convrot.safetensors and swaps in the fp32
+time-embedding / modulation-bias tensors of a data-space distillation:
+
+  py -3 tools/moss4/make_moss_4step_base.py        4 steps, akhaliq/MOSS-Image-SFT-4-steps
+                                                    (IMAGE-MODELS/moss-image/4step/time_embedding.safetensors)
+  py -3 tools/moss4/make_moss_4step_base.py 8      8 steps, lodestones/MOSS-Image-SFT-8-steps-dmd
+                                                    (IMAGE-MODELS/moss-image/8step-dmd/time_embedding.safetensors)
+
+Output: IMAGE-MODELS/moss-image/moss_image_sft_<N>step_int8_convrot.safetensors.
+The matching LoRA stays a separate file and is applied unmerged at runtime by sd.cpp.
 """
 import json, os, pathlib, struct, sys
 
-MODELS = pathlib.Path(__file__).resolve().parent.parent.parent / 'IMAGE-MODELS'
+VARIANTS = {
+    '4': ('4step', 'akhaliq/MOSS-Image-SFT-4-steps'),
+    '8': ('8step-dmd', 'lodestones/MOSS-Image-SFT-8-steps-dmd'),
+}
+steps = (sys.argv[1] if len(sys.argv) > 1 else '4').lower().removesuffix('step')
+if steps not in VARIANTS:
+    sys.exit(f'usage: make_moss_4step_base.py [{"|".join(VARIANTS)}]')
+sub, source = VARIANTS[steps]
+MODELS = pathlib.Path(__file__).resolve().parent.parent.parent / 'IMAGE-MODELS' / 'moss-image'
 BASE = str(MODELS / 'moss_image_sft_int8_convrot.safetensors')
-TE = str(MODELS / 'moss-4step' / 'time_embedding.safetensors')
-OUT = str(MODELS / 'moss_image_sft_4step_int8_convrot.safetensors')
+TE = str(MODELS / sub / 'time_embedding.safetensors')
+OUT = str(MODELS / f'moss_image_sft_{steps}step_int8_convrot.safetensors')
 
 
 def read_header(path):
@@ -33,7 +47,7 @@ names = [k for k in bh if k != '__metadata__']
 names.sort(key=lambda k: bh[k]['data_offsets'][0])
 new_h = {}
 meta = dict(bh.get('__metadata__') or {})
-meta['ggufrun_moss_4step'] = 'time_embedding/modulation biases from akhaliq/MOSS-Image-SFT-4-steps (fp32)'
+meta[f'ggufrun_moss_{steps}step'] = f'time_embedding/modulation biases from {source} (fp32)'
 new_h['__metadata__'] = meta
 plan = []
 off = 0
