@@ -34,14 +34,35 @@ def managed_runtimes(base):
     return sorted(found, key=lambda name: int(managed_info(name)[0]), reverse=True)
 
 
+def project_sdk_bin(base):
+    """RUNTIMES/rocm-sdk-<版本>/bin（有 hipblas.dll 的），版本最新的優先；沒有回 None。"""
+    root = Path(base) / SDK_PARENT
+    found = []
+    for p in root.glob('rocm-sdk-*') if root.is_dir() else ():
+        m = re.fullmatch(r'rocm-sdk-(\d+(?:\.\d+)+)', p.name, re.IGNORECASE)
+        if m and (p / 'bin' / 'hipblas.dll').is_file():
+            found.append((tuple(int(x) for x in m.group(1).split('.')), p / 'bin'))
+    return max(found)[1] if found else None
+
+
+def needs_project_sdk(runtime):
+    """官方 ROCm 版 llama.cpp（例：llama-b12224-bin-win-rocm-10.0-x64）只附 ggml-hip.dll，
+    hipBLAS／rocBLAS 要另外找；資料夾裡沒有 hipblas.dll 就要借專案的 rocm-sdk。"""
+    runtime = Path(runtime)
+    return (runtime / 'ggml-hip.dll').is_file() and not (runtime / 'hipblas.dll').is_file()
+
+
 def llama_environment(executable, base):
     env = os.environ.copy()
     runtime = Path(executable).resolve().parent
     info = managed_info(runtime)
-    if not info:
-        return env
     base = Path(base).resolve()
-    libraries = base / sdk_relative(info[1]) / 'bin'
+    if info:
+        libraries = base / sdk_relative(info[1]) / 'bin'
+    else:
+        libraries = project_sdk_bin(base) if needs_project_sdk(runtime) else None
+        if libraries is None:
+            return env
     old_sdk_root = str(base / LEGACY_SDK_RELATIVE).replace(chr(92), '/').casefold() + '/packages'
     sdk_prefix = str(base / SDK_PARENT / 'rocm-sdk-').replace(chr(92), '/').casefold()
 
@@ -135,6 +156,11 @@ def prepare_llama_launch(command, base):
         except RuntimeError as exc:
             note += f'[ROCm] ⚠ {exc}（照常啟動）\n'
         note += f'[ROCm] BLAS：{Path(base) / sdk_relative(info[1]) / "bin"}\n'
+    elif needs_project_sdk(runtime):
+        sdk = project_sdk_bin(base)
+        note += (f'[ROCm] {runtime.name}：ROCm 函式庫用專案的 {sdk.parent.name}（已加進 PATH）\n' if sdk else
+                 f'[ROCm] ⚠ {runtime.name} 沒附 hipBLAS，RUNTIMES 裡也找不到 rocm-sdk-*；'
+                 '要靠系統裝的 HIP SDK，找不到就只能用 CPU\n')
     if not (runtime / 'ggml-hip.dll').is_file() or cpu_requested(command):
         return env, note
     try:

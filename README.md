@@ -21,6 +21,17 @@ GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com
 
 **3. 載入後自動釋放 RAM**：mmap 載入時，放上 GPU 的權重會先從模型檔讀進 RAM 再複製到顯存，Windows 版 llama.cpp 之後不放掉這些頁面，顯存和 RAM 各留一份。GUI 在 server 第一次回報 RUNNING 時，對自己啟動的 llama-server 呼叫一次 `EmptyWorkingSet`（`ram_release.py`），日誌顯示 `[RAM] 模型已載入：釋放已上顯存的模型檔頁面，working set X → Y GiB`；CPU 層（如 `--n-cpu-moe` 的專家）用到時自動從檔案快取讀回。實測 RX 9070 + 32 GB RAM 跑一個 68 GB 的 MoE GGUF（自動放置、`-c 32768`）：載入後的 14.4 GiB 已上顯存權重不再佔 RAM，跑完兩個請求後可用 RAM 由 0.3 GB 變成 7.4 GB，生成速度相同。`--no-mmap`、`--mlock`、載入模式 `mlock`／`mmap+mlock`／`none`／`dio` 不做釋放；外部接管的 server 與 EXL3 不處理。不需要時刪除 `ram_release.py` 即可。
 
+**4. MoE 專家放 RAM 的加速設定**（進階參數「MoE」「投機解碼」分頁，需 llama.cpp b12224 或更新）：
+
+| 欄位 | 送出 | 作用 |
+| --- | --- | --- |
+| MoE 放 CPU 層數 | `--n-cpu-moe N`／填 `all` 送 `--cpu-moe` | 專家權重放 RAM；注意力等共用權重仍在顯卡。 |
+| MoE 顯卡快取 | `--moe-cache-mib N` | 在顯卡留一塊空間放常用專家的副本，沒命中才經 PCIe 搬上來，擠掉最久沒用的；必須搭配上一欄。 |
+| 預填批次 | `--ubatch-size N`（超過 2048 自動加 `-b`） | 每批都要把專家搬上顯卡一次，批次越大長文預填越快；代價是運算暫存變大、要讓出快取。留空＝512。 |
+| 附加 n-gram（抄前文） | 併入 `--spec-type`，如 `draft-mtp,ngram-mod` | 輸出照抄前文時（改程式、引用原文）一次接受一大段，可與 MTP／DF 草稿同時用。 |
+
+實測 RX 9070 16 GB＋DDR4 2666，Gemma4-26B-A4B Q4_K_M＋MTP 草稿（一次 2 個）、10 萬 context、KV q4_0、`--cpu-moe --moe-cache-mib 8500 --ubatch-size 1024`：3 萬 token 長文預填約 640 tok/s、生成約 39 tok/s；短對話約 48 tok/s。改函式後完整輸出的工作，MTP 61 tok/s → 加 `ngram-mod` 85 tok/s。預填批次 1024→2048 預填約快 5 成，但這張卡上生成會掉，快取越大生成越快；長文的 llama-server 日誌會整理成預填進度、速度與草稿接受率。
+
 ## EXL3 模式（選配，AMD RX 9070 系列）
 
 GGUFRun 也能啟動 [ExLlamaV3](https://github.com/turboderp-org/exllamav3) 的 EXL3 量化模型。執行環境另外發布在 **[BBQ2077/exl3-windows-gfx1201](https://github.com/BBQ2077/exl3-windows-gfx1201)**：原生 Windows、免安裝，內附 Python／PyTorch ROCm 10.1 與預編譯核心，**只支援 gfx1201（RX 9070 XT／9070／9070 GRE、Radeon AI PRO R9700）**。不用 EXL3 就不必下載，一般 GGUF 不受影響。

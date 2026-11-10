@@ -31,13 +31,17 @@ try:
 except ImportError:
     ram_release = None
 try:
+    import llm_logview          # server 輸出整理（載入摘要、預填進度、速度、草稿接受率）
+except ImportError:
+    llm_logview = None
+try:
     import llm_exl3
 except ImportError:
     class llm_exl3:  # noqa: N801  與真模組同名的替身：一律回報「不是 EXL3」
         MODEL_DIR_NAME = "LLM-MODELS-EXL3"
-        VISION_MODES = ("off",)
+        VISION_MODES = ("off", "gpu", "ram")
         NA_REASONS, EXL3_NOTES, LLAMA_ONLY = {}, {}, ()
-        GGUF_NA = {"vision": "需要 llm_exl3.py（EXL3 支援）"}
+        GGUF_NA = {}
         PLACEMENT_FIELDS = ()
         ACCEL_FIELDS, ACCEL_KEYS, RUNTIME_HELP, ACCEL_SHORT = (), (), "", {}
         find_runtime = staticmethod(lambda base, prefer="": None)
@@ -326,6 +330,56 @@ def registry_kind(path):
     return ""
 
 
+SIDECAR_HINT = ("mtp", "assistant")   # 外掛 MTP 草稿常見檔名（小檔才算）
+
+
+def is_mmproj(path):
+    """視覺塔（多模態投影）檔：檔名含 mmproj。"""
+    return "mmproj" in os.path.basename(path).lower()
+
+
+def find_mmproj(model_path):
+    """配對主模型的 mmproj：先找主模型同資料夾、再找 LLM-MODELS/。
+    mmproj 的 clip.vision.projection_dim 必須等於主模型的 embedding_length（讀不到就不擋）；
+    有多個符合時挑檔名字詞重疊最多的。找不到回 None。"""
+    arch = gguf_arch(model_path)
+    try:
+        n_embd = int(gguf_meta(model_path, f"{arch}.embedding_length", limit=200)) if arch else 0
+    except (TypeError, ValueError):
+        n_embd = 0
+    words = set(re.split(r"[-_. ]+", os.path.basename(model_path).lower()))
+    best, seen = None, set()
+    for d in (os.path.dirname(model_path), LLM_MODELS):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for fn in names:
+            fp = os.path.join(d, fn)
+            if not fn.lower().endswith(".gguf") or not is_mmproj(fn) or os.path.normcase(fp) in seen:
+                continue
+            seen.add(os.path.normcase(fp))
+            try:
+                pd = int(gguf_meta(fp, "clip.vision.projection_dim", limit=80) or 0)
+            except (TypeError, ValueError):
+                pd = 0
+            if n_embd and pd and pd != n_embd:
+                continue
+            score = len(words & set(re.split(r"[-_. ]+", fn.lower())))
+            if best is None or score > best[0]:
+                best = (score, fp)
+    return best[1] if best else None
+
+
+def draft_format_ok(main, draft):
+    """草稿格式要跟主模型同一種：GGUF 主模型配 .gguf 檔；EXL3 主模型配 EXL3 資料夾。"""
+    if not draft or draft == "-" or not main:
+        return True
+    if llm_exl3.is_exl3(main):
+        return os.path.isdir(draft)
+    return draft.lower().endswith(".gguf") and not os.path.isdir(draft)
+
+
 def looks_like_sidecar(path):
     """粗略判斷某個 .gguf 是否像「外掛小檔」（草稿/投機模型）。
 
@@ -353,8 +407,8 @@ def list_models():
         return out
     for fn in names:
         low = fn.lower()
-        if not low.endswith(".gguf"):
-            continue
+        if not low.endswith(".gguf") or is_mmproj(fn):
+            continue                                  # mmproj＝視覺塔，不是主模型
         p = os.path.join(LLM_MODELS, fn)
         k = registry_kind(p)
         if k == "drafter":
@@ -362,8 +416,8 @@ def list_models():
         if not k:
             if any(h in low for h in DRAFT_STRONG):
                 continue                              # 沒記過 + 明確草稿字樣 → 排除
-            if "mtp" in low and looks_like_sidecar(p):
-                continue                              # 沒記過 + mtp 小檔 → 像外掛草稿
+            if any(h in low for h in SIDECAR_HINT) and looks_like_sidecar(p):
+                continue                              # 沒記過 + mtp／assistant 小檔 → 像外掛草稿
         try:
             size = os.path.getsize(p)
         except Exception:
@@ -406,7 +460,7 @@ def guess_drafter(model_path, extra=None):
         d = pick("bonsai", "dspark", "dflash") or pick("bonsai", "dspark")
         return (d, "draft-dspark") if d else (None, None)
     if "gemma" in low:
-        d = pick("mtp", "gemma")
+        d = pick("mtp", "gemma") or pick("assistant", "gemma")
         return (d, "draft-mtp") if d else (None, None)
     return (None, None)
 
@@ -449,7 +503,7 @@ def list_drafters():
         return out
     for fn in names:
         low = fn.lower()
-        if not low.endswith(".gguf"):
+        if not low.endswith(".gguf") or is_mmproj(fn):
             continue
         p = os.path.join(LLM_MODELS, fn)
         k = registry_kind(p)
@@ -458,8 +512,8 @@ def list_drafters():
         if not k:
             if any(h in low for h in DRAFT_STRONG):
                 pass                                  # 明確草稿字樣 → 收
-            elif "mtp" in low and looks_like_sidecar(p):
-                pass                                  # 含 mtp 但檔案偏小 → 像外掛草稿
+            elif any(h in low for h in SIDECAR_HINT) and looks_like_sidecar(p):
+                pass                                  # 含 mtp／assistant 但檔案偏小 → 像外掛草稿
             else:
                 continue
         try:
@@ -601,6 +655,10 @@ ADV_SPEC = [
     ("--spec-draft-p-min",    "sdpmin",  "草稿最低機率 (p-min)",   "貪婪解碼時的最低草稿機率。llama.cpp 預設 0.00"),
 ]
 
+# 附加 n-gram 草稿（從前文抄，對應 EXL3 的 -hdt／-ngram）：併進 --spec-type 的逗號清單，可與 MTP／DF 同時用。
+# 實測 Gemma4-26B（改函式後完整輸出，1678 token）：MTP 單獨 61.2 tok/s → MTP＋ngram-mod 85.2 tok/s。
+NGRAM_TYPES = ("", "ngram-mod", "ngram-simple", "ngram-map-k", "ngram-map-k4v")
+
 # MoE 權重放置（專家層）相關參數。本 build 實查旗標：
 #   -ncmoe N           / --n-cpu-moe N             主模型前 N 層的專家權重放 CPU
 #   --spec-draft-ncmoe / -ncmoed                   草稿模型（DF）版（本 UI 不做）
@@ -635,7 +693,19 @@ ADV_MOE = [
     ("--n-cpu-moe", "ncmoe", "MoE 放 CPU 層數 (-ncmoe)",
      "把前 N 層的專家（MoE）權重留在 CPU，其餘照 -ngl 上 GPU。\n"
      "VRAM 不夠時用來「少放幾層專家上卡」換取不爆顯存；調太大生成會明顯變慢。\n"
+     "填 all＝全部專家放 RAM（送 --cpu-moe），通常搭配下面的 MoE 顯卡快取。\n"
      "只在 MoE 模型有意義，N 的上限就是該模型自己的層數。"),
+    ("--moe-cache-mib", "moecache", "MoE 顯卡快取 MiB (--moe-cache-mib)",
+     "放在 RAM 的專家，挑最常用的複製一份到顯卡當快取（單位 MiB）。\n"
+     "只對「放 CPU 的專家」有效：要搭配 -ncmoe N 或 all。\n"
+     "不是額外顯存：原本放專家層的顯存改成當快取，各層最常用的專家都能在顯卡上算。\n"
+     "實測 Gemma4-26B（65536、KV q4_0、MTP）：-ncmoe 12 約 32 tok/s；all＋快取 9000 約 51 tok/s；\n"
+     "快取太大會溢到共用記憶體反而變慢（11000 掉到 38）。留空／0＝不用快取。"),
+    ("--ubatch-size", "ubatch", "預填批次 (-ub)",
+     "一次預填多少 token（llama.cpp 預設 512）。\n"
+     "專家放 RAM 時，每一批都要把專家經 PCIe 搬上顯卡一次：批次越大搬越少，長文預填越快。\n"
+     "代價：顯卡運算暫存跟著變大，要從 MoE 顯卡快取讓出空間。超過 2048 會自動一併送 -b。\n"
+     "實測 Gemma4-26B 128K、ncmoe 24：512 約 500 tok/s；1024 約 850；2048 約 1270（1.5 萬 token 長文）。留空＝預設 512。"),
     ("--n-cpu-ffn", "ncffn", "密集 FFN 放 CPU 層數 (-ncffn)",
      "把前 N 層的「密集」FFN 權重留在 CPU。\n"
      "這是給非 MoE（dense）模型用的；MoE 模型的專家權重請用上面的 -ncmoe。"),
@@ -1006,9 +1076,13 @@ class App:
             sel = self._drafter_map.get(self.drafter.get(), "")
             if sel == "-":
                 return None, None, "已指定不使用"
-            if sel:
-                return sel, spec_for_drafter(sel, self._model_extra(sel)), "手動指定"
             mp = mp or self.model_path()
+            if sel and draft_format_ok(mp, sel):
+                return sel, spec_for_drafter(sel, self._model_extra(sel)), "手動指定"
+            if sel:                              # 選的草稿格式不符：不改選單，啟動時改用自動配對
+                dr, spec = guess_drafter(mp, self._model_extra(mp))
+                return (dr, spec, "所選草稿格式不符，啟動時改用自動配對") if dr else \
+                       (None, None, "所選草稿格式不符，自動配對也找不到")
             dr, spec = guess_drafter(mp, self._model_extra(mp))
             return (dr, spec, "自動配對") if dr else (None, None, "自動配對：找不到")
 
@@ -1023,14 +1097,15 @@ class App:
                 self.lbl_model.config(text="!! 找不到這個模型檔", foreground="#b00")
                 return
             _dsel = self._drafter_map.get(self.drafter.get(), "")
-            if _dsel and _dsel != "-" and (llm_exl3.is_exl3(_dsel) or llm_exl3.is_lilicorr(_dsel)) != llm_exl3.is_exl3(p):
-                # 草稿和主模型不同格式（EXL3／GGUF 不能混用）→ 改回自動配對；set 會再觸發一次本函式
-                self._log(f"[模型] 草稿 {os.path.basename(_dsel)} 和主模型格式不同"
-                          f"（{'EXL3' if llm_exl3.is_exl3(p) else 'GGUF'} 主模型），已改回「自動配對」\n")
-                self.drafter.set(self._drafters[0])
-                return
+            # 草稿和主模型不同格式（EXL3／GGUF 不能混用）：只提示，選單保留原選擇（才能在這裡刪掉殘留項目）
+            _fmt_warn = "" if draft_format_ok(p, _dsel) else (
+                f"｜⚠ 草稿 {os.path.basename(_dsel)} 不是{'EXL3 資料夾' if llm_exl3.is_exl3(p) else ' GGUF 檔'}，"
+                "跟這個主模型不能搭；啟動時改用自動配對")
             if llm_exl3.is_exl3(p):
-                self.lbl_model.config(**self._exl3_status(p))
+                _st = self._exl3_status(p)
+                if _fmt_warn:
+                    _st = {"text": _st["text"] + _fmt_warn, "foreground": "#b70"}
+                self.lbl_model.config(**_st)
                 return
             dr, spec, how = _resolve_drafter(p)
             gib = os.path.getsize(p) / 2 ** 30
@@ -1050,6 +1125,16 @@ class App:
                         _hint = (("目前兩套執行檔都不支援" if len(RUNTIMES) > 1
                                   else "目前這套執行檔不支援") + "，按啟動會直接失敗")
                     warn += "｜⚠ 這顆模型是 " + _arch + " 架構：" + _hint
+            warn += _fmt_warn
+            _vis = self.adv["vision"].get() if hasattr(self, "adv") else "off"
+            if _vis in ("gpu", "ram"):
+                _mm = find_mmproj(p)
+                warn_v = "" if _mm else "｜⚠ 視覺：找不到配這顆模型的 mmproj 檔 → 只聊文字"
+                if _mm:
+                    warn_v = f"｜視覺：{'顯卡' if _vis == 'gpu' else 'RAM'}（{os.path.basename(_mm)}）"
+                warn_vis = warn_v
+            else:
+                warn_vis = ""
             if dr and not os.path.exists(dr):
                 warn += "｜⚠ 指定的草稿模型檔不存在"
             elif dr:
@@ -1079,7 +1164,7 @@ class App:
                            f"（nextn_predict_layers={_nl}）")
                 else:
                     txt = f"✅ {gib:.2f} GiB｜找不到可搭配的草稿模型 → 投機解碼會自動改用 Normal"
-            self.lbl_model.config(text=txt + warn, foreground="#b70" if warn else "#2a7")
+            self.lbl_model.config(text=txt + warn_vis + warn, foreground="#b70" if (warn or "⚠" in warn_vis) else "#2a7")
 
         self.model.trace_add("write", _sync_model)
         self.drafter.trace_add("write", _sync_model)
@@ -1177,6 +1262,7 @@ class App:
             self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出該參數
         for _r in ADV_SPEC:
             self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
+        self.adv["sngram"] = tk.StringVar(value="")    # 附加 n-gram 草稿；空 = 不用
         for _r in ADV_MOE:
             self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（全部照 -ngl 放 GPU）
         for _r in ADV_LOAD:
@@ -1262,15 +1348,24 @@ class App:
             row=4, column=0, sticky="w", padx=6, pady=4)
         self.ncmoe = ttk.Entry(advf, textvariable=self.adv["ncmoe"], width=12)
         self.ncmoe.grid(row=4, column=1, sticky="w")
-        ttk.Label(advf, text="前 N 層的專家權重留在 CPU（留空＝不送，全部照 -ngl 上 GPU）\n"
-                             "VRAM 不夠時用來少放幾層專家上卡；填 0＝全部照 -ngl",
-                  foreground="#666", justify="left", wraplength=430).grid(
-            row=4, column=2, sticky="w", padx=6)
-        self._engine_reg("ncmoe", self.ncmoe, Tip(self.ncmoe, "旗標：--n-cpu-moe N（簡寫 -ncmoe）\n"
+        _moef = ttk.Frame(advf)
+        _moef.grid(row=4, column=2, sticky="w", padx=6)
+        ttk.Label(_moef, text="顯卡快取 MiB").pack(side="left")
+        self.moecache = ttk.Entry(_moef, textvariable=self.adv["moecache"], width=8)
+        self.moecache.pack(side="left", padx=(4, 8))
+        ttk.Label(_moef, text="預填批次").pack(side="left")
+        self.ubatch = ttk.Entry(_moef, textvariable=self.adv["ubatch"], width=6)
+        self.ubatch.pack(side="left", padx=(4, 8))
+        ttk.Label(_moef, text="N＝前 N 層專家放 RAM｜all＝全部放 RAM（--cpu-moe）\n"
+                              "快取：常用專家複製到顯卡（用原本放專家的顯存，搭配 all 最有效）",
+                  foreground="#666", justify="left", wraplength=400).pack(side="left")
+        self._engine_reg("ncmoe", self.ncmoe, Tip(self.ncmoe, "旗標：--n-cpu-moe N（簡寫 -ncmoe）；填 all 送 --cpu-moe\n"
                         "把「前 N 層」的 MoE 專家權重留在系統 RAM，其餘層照 -ngl 放 GPU。\n"
                         "用途：顯存不夠時少放幾層專家上卡，避免爆 VRAM（生成會變慢）。\n"
-                        "可填 0 到主模型的層數為止（層數看模型 header 的 block_count）。\n"
+                        "可填 0 到主模型的層數為止（層數看模型 header 的 block_count）；all＝全部專家放 RAM。\n"
                         "留空＝完全不送這個參數（llama.cpp 預設行為）。"))
+        self._engine_reg("moecache", self.moecache, Tip(self.moecache, "旗標：--moe-cache-mib N\n" + ADV_MOE[1][3]))
+        self._engine_reg("ubatch", self.ubatch, Tip(self.ubatch, "旗標：--ubatch-size N（簡寫 -ub）\n" + ADV_MOE[2][3]))
 
         ttk.Label(advf, text="密集 FFN 放 CPU 層數 (-ncffn)").grid(
             row=5, column=0, sticky="w", padx=6, pady=4)
@@ -1298,15 +1393,17 @@ class App:
             ttk.Label(opts, text=_desc, foreground="#666").grid(row=_i, column=1, sticky="w", padx=12)
             self._engine_reg(_key, _chk, Tip(_chk, _desc))
 
-        # 視覺（EXL3）：關閉／GPU／RAM
-        ttk.Label(advf, text="視覺（看圖，EXL3）").grid(row=7, column=0, sticky="w", padx=6, pady=4)
+        # 視覺塔：關閉／GPU／RAM（EXL3＝--vision；GGUF＝--mmproj＋--no-mmproj-offload）
+        ttk.Label(advf, text="視覺（看圖）").grid(row=7, column=0, sticky="w", padx=6, pady=4)
         _cb_vis = ttk.Combobox(advf, textvariable=self.adv["vision"], width=10, state="readonly",
                                values=list(llm_exl3.VISION_MODES))
         _cb_vis.grid(row=7, column=1, sticky="w")
         ttk.Label(advf, text="off＝不載入｜gpu＝視覺塔放顯卡（最快）\n"
                              "ram＝放系統 RAM，看圖時才串流上顯卡（幾乎不佔顯存）",
                   foreground="#666", justify="left").grid(row=7, column=2, sticky="w", padx=6)
-        self._engine_reg("vision", _cb_vis, Tip(_cb_vis, "旗標：--vision off|gpu|ram（EXL3 server）\n"
+        self._engine_reg("vision", _cb_vis, Tip(_cb_vis, "EXL3：--vision off|gpu|ram\n"
+                         "GGUF：自動找 LLM-MODELS/ 裡配這顆模型的 mmproj 檔 → --mmproj；ram 再加 --no-mmproj-offload\n"
+                         "（GGUF 的 ram＝視覺塔由 CPU 計算，不佔顯存，看圖慢一些）\n"
                          "模型有視覺塔才有作用（例：Qwen3.8-27B-exl3）；改了要重新啟動 server。\n"
                          "gpu：視覺塔常駐顯卡（Qwen3.8 未量化視覺塔約 0.9 GiB）。\n"
                          "ram：權重留在系統 RAM，每張圖多花約 0.1～0.2 秒串流上顯卡。\n"
@@ -1532,6 +1629,21 @@ class App:
         pane.add(_bot, weight=1)
         logf = ttk.LabelFrame(_bot, text="日誌")
         logf.pack(fill="both", expand=True, padx=10, pady=(4, 8))
+        _lbar = ttk.Frame(logf)
+        _lbar.pack(fill="x")
+        self.raw_view = tk.BooleanVar(value=False)
+        self._raw_view = False
+        self.raw_view.trace_add("write", lambda *_a: setattr(self, "_raw_view", bool(self.raw_view.get())))
+        _chk_raw = ttk.Checkbutton(_lbar, text="顯示原始輸出", variable=self.raw_view)
+        _chk_raw.pack(side="left", padx=4)
+        Tip(_chk_raw, "不勾（預設）：只顯示整理過的重點——載入摘要（層數、權重／KV／MoE 快取放哪裡、顯存剩多少）、\n"
+                      "預填進度、生成速度、草稿接受率、錯誤。\n勾選：照 server 原樣顯示每一行（除錯用）。\n"
+                      "不論勾不勾，完整原始輸出都會存到 logs/ 資料夾（保留最新 30 份）。")
+        _b_raw = ttk.Button(_lbar, text="📂 完整 log", command=self._open_raw_log)
+        _b_raw.pack(side="left", padx=4)
+        Tip(_b_raw, "用記事本開啟這次 server 的完整原始輸出（logs/ 資料夾）。")
+        self.lbl_speed = ttk.Label(_lbar, text="", foreground="#06c")
+        self.lbl_speed.pack(side="left", padx=10)
         self.log = scrolledtext.ScrolledText(logf, height=10, wrap="word")
         self.log.pack(fill="both", expand=True)
         # 設定區滾輪：綁到設定區每個子控件（Tk 滾輪事件不會冒泡到 Canvas）
@@ -1761,6 +1873,12 @@ class App:
         if not os.path.exists(p):
             messagebox.showerror("找不到檔案", p)
             return
+        if not p.lower().endswith(".gguf"):
+            messagebox.showinfo(
+                "這裡只收 GGUF 檔",
+                f"{os.path.basename(p)}\n\n「添加」只能加入 .gguf 檔（llama-server 用）。\n"
+                f"EXL3 模型（含 EXL3 草稿）請把整個資料夾放進\n{llm_exl3.model_root(BASE)}\n會自動列在清單裡。")
+            return
         low = os.path.basename(p).lower()
         # 已記過分類 → 直接用記憶，不再問（「不要每次重複手動」）
         memo = self._model_extra(p)
@@ -1771,7 +1889,7 @@ class App:
             self._log(f"[模型] 依記憶的分類加入（{what}，不再詢問）：{p}\n")
         else:
             looks_strong = any(h in low for h in DRAFT_STRONG)
-            looks_mtp = "mtp" in low
+            looks_mtp = any(h in low for h in SIDECAR_HINT)
             if not is_df and (looks_strong or (looks_mtp and looks_like_sidecar(p))):
                 # 「是」= 改用 DF 身分加入；「否」= 照樣當主模型加入。
                 # 不論選哪個都會記住，下次直接用記憶、不再問。
@@ -1880,15 +1998,27 @@ class App:
         else:
             kind, target = cand[0]
         inside = os.path.normcase(os.path.dirname(os.path.abspath(target))) == os.path.normcase(LLM_MODELS)
-        ans = messagebox.askyesnocancel(
-            f"刪除手動添加的{kind}",
-            f"{os.path.basename(target)}\n\n"
-            + ("⚠ 這個檔案就在程式資料夾內。\n"
-               "  只從清單移除沒有用，下次掃描會再自動撿回來（看起來就像刪不掉）。\n\n" if inside else "")
-            + "「是」= 從清單移除，並把檔案丟進資源回收桶（可還原）\n"
-            + ("「否」= 只從清單移除（此檔在資料夾內，之後會被自動掃描加回來）\n" if inside
-               else "「否」= 只從清單移除，檔案保留\n")
-            + "「取消」= 什麼都不做")
+        if not target.lower().endswith(".gguf"):
+            # 例：被誤登記成草稿的 EXL3 資料夾內 model.safetensors —— 丟回收桶會毀掉整個 EXL3 模型，只准移出清單
+            if not messagebox.askokcancel(
+                    f"移除清單項目（{kind}）",
+                    f"{target}\n\n這不是 GGUF 檔（可能是 EXL3 模型資料夾裡的權重檔被誤加進清單）。\n"
+                    "按「確定」只從清單移除，檔案不動（刪掉它會讓那個 EXL3 模型無法使用）。"):
+                return
+            ans = False
+            inside = False
+        else:
+            ans = None
+        if ans is None:
+            ans = messagebox.askyesnocancel(
+                f"刪除手動添加的{kind}",
+                f"{os.path.basename(target)}\n\n"
+                + ("⚠ 這個檔案就在程式資料夾內。\n"
+                   "  只從清單移除沒有用，下次掃描會再自動撿回來（看起來就像刪不掉）。\n\n" if inside else "")
+                + "「是」= 從清單移除，並把檔案丟進資源回收桶（可還原）\n"
+                + ("「否」= 只從清單移除（此檔在資料夾內，之後會被自動掃描加回來）\n" if inside
+                   else "「否」= 只從清單移除，檔案保留\n")
+                + "「取消」= 什麼都不做")
         if ans is None:
             return
         reg = [e for e in load_registry()
@@ -2003,8 +2133,12 @@ class App:
             df = "Normal（只用主模型）"
         elif sel == "-":
             df = "不使用草稿"
+        elif sel and not draft_format_ok(p, sel):
+            d = llm_exl3.guess_draft(p, BASE)
+            df = f"所選草稿不是 EXL3（啟動時改用自動配對{'：' + os.path.basename(d) if d else '，找不到'}）"
         elif sel:
-            df = ("DF：" + os.path.basename(sel)) if llm_exl3.draft_matches(p, sel) \
+            _ok, _why = llm_exl3.draft_supported(sel, self._exl3_rt())
+            df = ("⚠ " + _why) if not _ok else ("DF：" + os.path.basename(sel)) if llm_exl3.draft_matches(p, sel) \
                 else "⚠ 這個草稿看起來跟主模型不搭，照常啟動，以實際載入結果為準"
         else:
             d = llm_exl3.guess_draft(p, BASE)
@@ -2033,6 +2167,10 @@ class App:
     def _build_exl3_cmd(self, port):
         mp = self.model_path()
         sel = self._drafter_map.get(self.drafter.get(), "")
+        _fmt_note = ""
+        if not draft_format_ok(mp, sel):
+            _fmt_note = f"[EXL3] ⚠ 所選草稿 {os.path.basename(sel)} 不是 EXL3 資料夾 → 本次改用自動配對\n"
+            sel = ""
         cmd, note = llm_exl3.build_cmd(
             mp, self._exl3_rt(), BASE, port=port, ctx=self.ctx.get(), ctk=self.ctk.get(),
             ctv=self.ctv.get(), think=self.think.get(), effort=self.adv["rea_effort"].get(),
@@ -2048,6 +2186,7 @@ class App:
             ignored.append("思考預算")
         if ignored:
             note += "[EXL3] 這些 llama.cpp 專屬參數不適用，已略過：" + "、".join(ignored) + "\n"
+        note = _fmt_note + note
         self._forced_fa = False
         self._spec_note = note
         return cmd
@@ -2073,6 +2212,12 @@ class App:
         cmd = [self.server_exe(), "-m", mp, "--alias", model_alias(mp),
                "--host", "127.0.0.1", "--port", p,
                "-c", str(context * parallel), "-np", str(parallel)]
+        self._build_notes = []
+        # 詳細等級 4：載入時才會印出各模型上 GPU 層數、權重／KV／MoE 快取放哪裡；
+        # 生成時只多幾行統計（實測一次請求約 20 行），日誌區會整理成摘要。自訂指令有指定就照它的。
+        _ev0 = self.adv["extra_args"].get() if "extra_args" in self.adv else ""
+        if not re.search(r"(^|\s)(-lv|--verbosity|--log-verbosity|-v|--verbose|--log-verbose)(\s|=|$)", _ev0):
+            cmd += ["-lv", "4"]
         # 取樣參數（在「⚙ 進階取樣設定」視窗調整；留空 = 不送出該參數）
         for _r in ADV_CORE:
             _v = self.adv[_r[1]].get().strip()
@@ -2083,10 +2228,23 @@ class App:
             if _v:
                 cmd += [_r[0], _v]
         # MoE 權重放置（-ncmoe / -ncffn）：留空 = 不送，全部照 -ngl 上 GPU
+        _ncmoe = self.adv["ncmoe"].get().strip().lower() if "ncmoe" in self.adv else ""
         for _r in ADV_MOE:
-            _v = self.adv[_r[1]].get().strip()
-            if _v:
-                cmd += [_r[0], _v]
+            _v = self.adv[_r[1]].get().strip() if _r[1] in self.adv else ""
+            if not _v:
+                continue
+            if _r[1] == "ncmoe" and _v.lower() in ("all", "cpu", "全部"):
+                cmd += ["--cpu-moe"]                 # 全部專家放 RAM
+                continue
+            if _r[1] == "moecache":
+                if _v == "0":
+                    continue
+                if not _ncmoe or _ncmoe == "0":
+                    self._build_notes.append("[MoE] ⚠ 有填 MoE 顯卡快取，但沒有專家放 RAM（-ncmoe 空白或 0）→ 快取不會生效；"
+                                             "要用快取請把 -ncmoe 填 all 或層數")
+            if _r[1] == "ubatch" and _v.isdigit() and int(_v) > 2048:
+                cmd += ["-b", _v]                    # -b 預設 2048，-ub 不能大於 -b
+            cmd += [_r[0], _v]
         # 模型載入模式（-lm / -lzm）：留空 = 不送，用 llama.cpp 內建預設
         for _r in ADV_LOAD:
             _v = self.adv[_r[1]].get().strip()
@@ -2135,11 +2293,26 @@ class App:
         if self.nkvo.get():
             cmd += ["-nkvo"]
 
+        # 視覺塔（mmproj）：gpu＝放顯卡；ram＝--no-mmproj-offload（權重留 RAM、由 CPU 計算，不佔顯存）
+        _ev_all = self.adv["extra_args"].get() if "extra_args" in self.adv else ""
+        _vis = (self.adv["vision"].get() if "vision" in self.adv else "off") or "off"
+        _vis = _vis.strip().lower()
+        if _vis in ("gpu", "ram") and not re.search(r"(^|\s)(-mm|--mmproj)(\s|=)", _ev_all):
+            _mm = find_mmproj(mp)
+            if _mm:
+                cmd += ["--mmproj", _mm] + (["--no-mmproj-offload"] if _vis == "ram" else [])
+                self._build_notes.append(f"[視覺] {os.path.basename(_mm)}｜" + (
+                    "放顯卡（看圖最快，佔約 1.1～1.3 GiB 顯存）" if _vis == "gpu" else
+                    "放系統 RAM、CPU 計算（不佔顯存，看圖會慢一些）"))
+            else:
+                self._build_notes.append("[視覺] ⚠ 找不到配這顆模型的 mmproj 檔（LLM-MODELS/ 內檔名含 mmproj）→ 只聊文字")
+
         mode = self.mode.get()
         self._forced_normal = ""
         self._spec_note = ""
         self._spec_span = None              # 模式判斷自己送出的投機參數區段（起點, 終點）
         _spec_start = len(cmd)
+        _fmt_note = ""
         if mode == "dspark":
             mp = self.model_path()
 
@@ -2160,6 +2333,9 @@ class App:
                 return True
 
             sel = self._drafter_map.get(self.drafter.get(), "")
+            if not draft_format_ok(mp, sel):    # 選到 EXL3 草稿：只提示，本次改用自動配對
+                _fmt_note = f"[投機] ⚠ 所選草稿 {os.path.basename(sel)} 不是 GGUF 檔，不能搭 GGUF 主模型 → 本次改用自動配對\n"
+                sel = ""
             if sel == "-":                      # 明確不使用外掛 DF ＝ 用主模型內建 MTP
                 if not _mtp_flags("[投機] 不使用外掛 DF：改用主模型內建 MTP"):
                     self._spec_note = (
@@ -2202,6 +2378,19 @@ class App:
         #      載入，接受率 0.26～0.58），這種寫法要照使用者寫的原樣送出、不能攔。
         #   2. 自訂指令指定了投機旗標 → 以自訂指令為準，UI 不重複送自己那一組
         #      （否則會出現兩份 --spec-type，值不同時哪個生效看不出來）。
+        # 附加 n-gram 草稿（抄前文）：併進本次的 --spec-type；沒有其他草稿時單獨送
+        _ng = self.adv["sngram"].get().strip() if "sngram" in self.adv else ""
+        if _ng and _ng in NGRAM_TYPES:
+            _seg = cmd[_spec_start:]
+            if "--spec-type" in _seg:
+                _i = _spec_start + _seg.index("--spec-type") + 1
+                if _ng not in cmd[_i].split(","):
+                    cmd[_i] = cmd[_i] + "," + _ng
+            else:
+                cmd += ["--spec-type", _ng]
+            self._spec_note += f"[投機] 附加 n-gram：{_ng}（輸出照抄前文時一次可接受一大段）\n"
+        if _fmt_note:
+            self._spec_note = _fmt_note + self._spec_note
         self._spec_span = (_spec_start, len(cmd)) if len(cmd) > _spec_start else None
         _extra = self.adv.get("extra_args")
         if _extra is not None:
@@ -2386,6 +2575,9 @@ class App:
                       "（啟動訊息會印 fitting params …）\n")
         if getattr(self, "_spec_note", ""):
             self._log(self._spec_note)
+        for _n in getattr(self, "_build_notes", ()):
+            self._log(_n + "\n")
+        self._vram_baseline()
         try:
             proc = subprocess.Popen(cmd, cwd=self.server_dir(), env=launch_env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2393,7 +2585,7 @@ class App:
         except Exception as e:
             messagebox.showerror("啟動失敗", str(e))
             return
-        threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._reader, args=(proc, "llama"), daemon=True).start()
         _SPAWNED.add(proc)
         self.active_port = port
         self._api_ready_key = None
@@ -2444,13 +2636,14 @@ class App:
             return
         self._log("$ " + subprocess.list2cmdline(cmd) + "\n")
         self._log(self._spec_note)
+        self._vram_baseline()
         try:
             proc = subprocess.Popen(cmd, cwd=self._exl3_rt(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception as e:
             messagebox.showerror("啟動失敗", str(e))
             return
-        threading.Thread(target=self._reader, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._reader, args=(proc, "exl3"), daemon=True).start()
         _SPAWNED.add(proc)
         self.active_port = port
         self._api_ready_key = None
@@ -2467,6 +2660,7 @@ class App:
         global proc
         if proc and proc.poll() is None:
             self._log("[停止] 終止 PID %d\n" % proc.pid)
+            proc._user_stopped = True
             proc.terminate()
             try:
                 proc.wait(timeout=8)
@@ -2492,11 +2686,82 @@ class App:
         self.btn_stop.config(state="disabled")
         self.lbl.config(text="狀態：已停止", foreground="#b00")
 
-    def _reader(self, p):
+    def _vram_baseline(self):
+        """啟動前量一次整張卡的顯存（背景執行，量完前模型通常還沒開始配置顯存）。"""
+        self._vram_before = None
+        if llm_logview is None:
+            return
+        threading.Thread(target=lambda: setattr(self, "_vram_before", llm_logview.vram_usage()), daemon=True).start()
+
+    def _vram_after_ready(self, p):
+        """載入完成後量一次顯存，和啟動前比較；共用記憶體變多＝溢出到系統 RAM（會變慢）。"""
+        def run():
+            time.sleep(3)
+            if p.poll() is not None:
+                return
+            txt = llm_logview.vram_report(getattr(self, "_vram_before", None), llm_logview.vram_usage())
+            if txt:
+                self._log(txt + "\n")
+        threading.Thread(target=run, daemon=True).start()
+
+    def _open_raw_log(self):
+        path = getattr(self, "_raw_log_path", "")
+        if path and os.path.exists(path):
+            os.startfile(path)
+        else:
+            d = os.path.join(BASE, "logs")
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)
+
+    def _reader(self, p, engine="llama"):
+        """讀 server 輸出：完整原始內容存 logs/；日誌區顯示整理後的重點（可勾「顯示原始輸出」切換）。"""
+        digest = raw = tail = None
+        if llm_logview is not None:
+            digest = llm_logview.Exl3Digest() if engine == "exl3" else llm_logview.LlamaDigest()
+            tail = llm_logview.Tail()
+            try:
+                raw, path = llm_logview.open_raw_log(BASE, engine)
+                self._raw_log_path = path
+                self._log(f"[日誌] 完整原始輸出：{path}\n")
+            except OSError:
+                raw = None
+        last, ready = None, False
         try:
-            for line in p.stdout:
-                self._log(line.decode("utf-8", "replace"))
+            for b in p.stdout:
+                line = b.decode("utf-8", "replace")
+                if raw is not None:
+                    try:
+                        raw.write(line)
+                        raw.flush()
+                    except (OSError, ValueError):
+                        raw = None
+                if digest is None:
+                    self._log(line)
+                    continue
+                tail.add(line)
+                shown = digest.feed(line)
+                if getattr(self, "_raw_view", False):
+                    self._log(line)
+                else:
+                    for o in shown:
+                        self._log(o + "\n")
+                if digest.last is not last:
+                    last = digest.last
+                    self._ui_events.put(("speed", last))
+                if not ready and getattr(digest, "loaded", False):
+                    ready = True
+                    self._vram_after_ready(p)
         finally:
+            try:
+                code = p.wait(timeout=10)
+            except Exception:
+                code = p.poll()
+            if raw is not None:
+                raw.close()
+            if tail is not None and code not in (0, None) and not getattr(p, "_user_stopped", False) \
+                    and not getattr(self, "_raw_view", False):
+                self._log("[程序異常結束] exit=%s，最後幾行原始輸出：\n" % code
+                          + "\n".join("  " + x for x in tail.q) + "\n")
             self._log("[程序結束]\n")
             events = getattr(self, "_ui_events", None)
             if events is not None:
@@ -2518,6 +2783,14 @@ class App:
                 if kind == "log":
                     self.log.insert("end", payload)
                     self.log.see("end")
+                elif kind == "speed":
+                    if payload and hasattr(self, "lbl_speed"):
+                        _t = f"上次請求：生成 {payload['tps']:.1f} tok/s"
+                        if payload.get("pp_tps"):
+                            _t += f"｜預填 {payload['pp_tps']:.0f} tok/s"
+                        if payload.get("acc") is not None:
+                            _t += f"｜草稿接受 {payload['acc']:.0%}"
+                        self.lbl_speed.config(text=_t)
                 elif kind == "process_exit":
                     child = payload
                     _SPAWNED.discard(child)
@@ -3038,6 +3311,8 @@ class App:
         rt = d.get("runtime")
         if isinstance(rt, str) and rt in [n for n, _dir in RUNTIMES]:
             self.runtime.set(rt)
+        elif isinstance(rt, str) and rt and RUNTIMES:
+            self._log(f"[設定] 上次的執行檔 {rt} 已不存在，改用 {self.runtime.get()}\n")
         # 草稿模型（DF）：存的是路徑（"" = 自動、"-" = 不使用）；顯示字串含檔案大小易變，故不比對字串
         dp = d.get("drafter_path")
         if isinstance(dp, str):
@@ -3354,6 +3629,15 @@ class App:
              "留空 = 不送出該參數，改用 llama.cpp 內建預設。\n"
              "★ n-max 官方預設是 3，不是 4。實測在 VRAM 較小的顯卡上 2~3 常常比 4 快——\n"
              "  草稿太長會讓額外成本吃掉收益，硬體越受限越明顯。建議自己從 1 掃到 6 找甜蜜點。")
+        _rng = len(ADV_SPEC) + 1
+        ttk.Label(t5, text="附加 n-gram（抄前文）").grid(row=_rng, column=0, sticky="w", padx=6, pady=3)
+        _cb_ng = ttk.Combobox(t5, textvariable=self.adv["sngram"], values=list(NGRAM_TYPES),
+                              state="readonly", width=14)
+        _cb_ng.grid(row=_rng, column=1, sticky="w", padx=6)
+        self._engine_reg("sngram", _cb_ng)
+        ttk.Label(t5, text="--spec-type 併入 ngram-*    輸出和前文重複時（改程式、引用原文）直接抄一段當草稿，\n"
+                           "可與 MTP／DF 同時用；空白＝不用。投機以外的模式選了也會單獨啟用。建議 ngram-mod",
+                  foreground="#666", wraplength=520, justify="left").grid(row=_rng, column=2, sticky="w", padx=6)
         t7 = ttk.Frame(nb); nb.add(t7, text="LoRA")
         _lora_note = ("LoRA adapter（.gguf）。啟動時送 --lora <路徑>；留空 = 不送。\n"
                       "★ 需搭配支援 LoRA 的執行檔；且 LoRA 是綁在「哪一顆基底模型」上，\n"
@@ -3495,7 +3779,7 @@ class App:
             self.adv[r[1]].set("")
             n += 1
         # 思考強度 / LoRA 強度有專屬 UI（不在清單內）→ 一起清
-        for _extra in ("rea_effort", "lora_scale"):
+        for _extra in ("rea_effort", "lora_scale", "sngram"):
             if _extra in self.adv:
                 self.adv[_extra].set("")
                 n += 1

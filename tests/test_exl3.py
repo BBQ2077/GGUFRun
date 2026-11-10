@@ -355,7 +355,7 @@ class Exl3UiTests(unittest.TestCase):
         vis = ttk.Combobox(root, state="readonly")
         tips = {k: app._engine_reg(k, w) for k, w in
                 (("drym", ent), ("runtime", combo), ("fa", chk), ("sdnmax", ndt), ("vision", vis))}
-        self.assertEqual(str(vis.cget("state")), "readonly")       # 視覺只對 EXL3 有效
+        self.assertEqual(str(vis.cget("state")), "readonly")       # 視覺 EXL3／GGUF 都可用
         self.assertEqual(str(ent.cget("state")), "disabled")
         self.assertEqual(str(combo.cget("state")), "disabled")
         self.assertEqual(str(chk.cget("state")), "disabled")
@@ -369,8 +369,8 @@ class Exl3UiTests(unittest.TestCase):
         self.assertEqual(str(chk.cget("state")), "normal")
         self.assertEqual(tips["drym"].extra, "")
         self.assertEqual(tips["sdnmax"].extra, "")
-        self.assertEqual(str(vis.cget("state")), "disabled")
-        self.assertIn("GGUF 不使用", tips["vision"].extra)
+        self.assertEqual(str(vis.cget("state")), "readonly")       # GGUF 用 --mmproj
+        self.assertEqual(tips["vision"].extra, "")
         ent.destroy()
         cur["p"] = self.main
         app._apply_engine_ui()

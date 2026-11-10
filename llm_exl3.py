@@ -56,7 +56,27 @@ def is_lilicorr(path):
 
 
 def is_draft(path):
-    return "draft" in architecture(path).lower()
+    """草稿模型：架構名含 Draft（DFlash 系列）或 Assistant（Gemma4 assistant 這類外掛 MTP 草稿）。"""
+    arch = architecture(path).lower()
+    return "draft" in arch or "assistant" in arch
+
+
+def is_assistant(path):
+    return "assistant" in architecture(path).lower()
+
+
+def draft_supported(draft, runtime):
+    """(能不能用, 原因)。依 runtime 的 supported-architectures.json 判斷草稿架構；讀不到清單就不擋。"""
+    if is_lilicorr(draft):          # LiLiCorr 草稿由 server.py 自己載入，不走 exllamav3 架構表
+        return True, ""
+    arch = architecture(draft)
+    caps = capabilities(runtime) if runtime else {}
+    archs = caps.get("architectures")
+    if not arch or not isinstance(archs, list) or arch in archs:
+        return True, ""
+    ver = caps.get("exllamav3_version", "?")
+    need = "（exllamav3 1.6.5 起才支援 Gemma4 assistant 草稿）" if arch.startswith("Gemma4Assistant") else ""
+    return False, f"這個 EXL3 runtime（exllamav3 {ver}）不支援 {arch} 草稿{need}，啟動時略過草稿"
 
 
 def has_vision(path):
@@ -294,6 +314,10 @@ def draft_matches(main, draft):
         return (architecture(main).startswith("NemotronH") and a.get("hidden_size") == b.get("hidden_size")
                 and a.get("vocab_size") == b.get("vocab_size") and bool(taps)
                 and all(isinstance(t, int) and 0 < t < depth for t in taps))
+    if is_assistant(draft):   # Gemma4 assistant：backbone_hidden_size＝主模型 hidden_size，詞表相同
+        bt = b.get("text_config", b)
+        return (a.get("hidden_size") == b.get("backbone_hidden_size")
+                and a.get("vocab_size") == bt.get("vocab_size"))
     return (a.get("hidden_size") == b.get("hidden_size") and a.get("vocab_size") == b.get("vocab_size")
             and a.get("num_hidden_layers") == b.get("num_target_layers"))
 
@@ -325,7 +349,9 @@ _EXL3_DRY_XTC = "ExLlamaV3 有這個取樣器，但 EXL3 server 目前沒有接�
 _EXL3_NO_SAMPLER = "ExLlamaV3 沒有這種取樣器"
 _DFLASH_ONLY_MAX = "EXL3 的 DFlash2 草稿只看「草稿長度上限」"
 NA_REASONS = {
-    "ngl": _ON_GPU, "ngld": _ON_GPU, "nkvo": _ON_GPU, "ncmoe": _ON_GPU, "ncffn": _ON_GPU,
+    "ngl": _ON_GPU, "ngld": _ON_GPU, "nkvo": _ON_GPU, "ncmoe": _ON_GPU, "ncffn": _ON_GPU, "moecache": _ON_GPU,
+    "ubatch": "EXL3 的預填分塊由 runtime 自己決定，沒有 -ub 這個參數",
+    "sngram": "EXL3 請用「從前文抄」的 -hdt／-ngram 欄位（同一種機制）",
     "fa": "EXL3 的注意力計算由 runtime 決定，沒有這個開關",
     "jinja": "EXL3 自動使用模型資料夾自帶的 chat template",
     "rbud": "EXL3 server 不支援思考預算（硬性 token 上限）",
@@ -416,8 +442,7 @@ ACCEL_SHORT = {
     "exl3_hostcb": "實驗：草稿查表放 RAM，省約 240 MB 顯存。",
     "exl3_qcslice": "實驗：長 Context 降顯存尖峰；這張卡效果未知。",
 }
-GGUF_NA = {"vision": "視覺選項只對 EXL3 模型有效",
-           **{key: "EXL3 專用；GGUF 請使用 -ncmoe／-ncffn 等欄位" for key, _label, _help in PLACEMENT_FIELDS},
+GGUF_NA = {**{key: "EXL3 專用；GGUF 請使用 -ncmoe／-ncffn 等欄位" for key, _label, _help in PLACEMENT_FIELDS},
            "exl3_embd": "EXL3 專用的 embedding 逐次讀取選項",
            **{key: "EXL3 專用（新版 runtime 的加速／快取／草稿選項）" for key in ACCEL_KEYS}}
 VISION_MODES = ("off", "gpu", "ram")
@@ -572,7 +597,11 @@ def build_cmd(main, runtime, base, *, port, ctx, ctk, ctv, think, effort, specul
             note += "[EXL3] 視覺：這個模型沒有視覺塔 → 只聊文字\n"
     if speculative:
         draft = None if drafter == "-" else (drafter or guess_draft(main, base))
-        if draft:
+        ok, why = draft_supported(draft, runtime) if draft else (True, "")
+        if draft and not ok:
+            note += f"[EXL3] ⚠ {os.path.basename(draft)}：{why} → 只用主模型解碼\n"
+            draft = None
+        elif draft:
             if not draft_matches(main, draft):
                 note += f"[EXL3] ⚠ {os.path.basename(draft)} 看起來跟主模型不搭（照常啟動，以實際載入結果為準）\n"
             block = draft_block(draft)
@@ -586,7 +615,7 @@ def build_cmd(main, runtime, base, *, port, ctx, ctk, ctv, think, effort, specul
                     n, _ = draft_count(draft_max, 2 ** 31)
                     cmd += ["-ndt", str(n)]
                 note += f"[EXL3] 投機解碼：{os.path.basename(draft)}（沒有 dflash_config.block_size，草稿長度由 runtime 決定）\n"
-        else:
+        elif ok:
             note += "[EXL3] 沒有相容的 EXL3 草稿 → 只用主模型解碼\n"
     for key, flag in SAMPLING:
         val = str(sampling.get(key, "")).strip()
