@@ -29,8 +29,17 @@ GGUFRun 使用 Python 標準庫的 Tkinter 管理 [llama.cpp](https://github.com
 | MoE 顯卡快取 | `--moe-cache-mib N` | 在顯卡留一塊空間放常用專家的副本，沒命中才經 PCIe 搬上來，擠掉最久沒用的；必須搭配上一欄。 |
 | 預填批次 | `--ubatch-size N`（超過 2048 自動加 `-b`） | 每批都要把專家搬上顯卡一次，批次越大長文預填越快；代價是運算暫存變大、要讓出快取。留空＝512。 |
 | 附加 n-gram（抄前文） | 併入 `--spec-type`，如 `draft-mtp,ngram-mod` | 輸出照抄前文時（改程式、引用原文）一次接受一大段，可與 MTP／DF 草稿同時用。 |
+| ngram-mod 比對長度／最短／最長 | `--spec-ngram-mod-n-match`／`-n-min`／`-n-max` | 附加 n-gram 選 `ngram-mod` 才送。比對長度＝最近幾個 token 要和前文一樣才開始抄；固定句型只有開頭相同時，調高可減少抄錯的長草稿。 |
 
-實測 RX 9070 16 GB＋DDR4 2666，Gemma4-26B-A4B Q4_K_M＋MTP 草稿（一次 2 個）、10 萬 context、KV q4_0、`--cpu-moe --moe-cache-mib 8500 --ubatch-size 1024`：3 萬 token 長文預填約 640 tok/s、生成約 39 tok/s；短對話約 48 tok/s。改函式後完整輸出的工作，MTP 61 tok/s → 加 `ngram-mod` 85 tok/s。預填批次 1024→2048 預填約快 5 成，但這張卡上生成會掉，快取越大生成越快；長文的 llama-server 日誌會整理成預填進度、速度與草稿接受率。
+**5. 多輪對話不重讀前文**（進階參數「前文快取／模板」分頁）：
+
+| 欄位 | 送出 | 作用 |
+| --- | --- | --- |
+| 前文快取上限 MiB | `--cache-ram N` | 切換對話時把 KV 暫存在 RAM，回來不用重讀；預設 8192，RAM 吃緊可設 4096。 |
+| 存檔點數量／最小間隔 | `--ctx-checkpoints N`／`-cms N` | SWA 模型（Gemma）退回舊位置靠存檔點；間隔 2048 時編輯、重來舊訊息要重讀的較少。 |
+| 聊天模板檔 | `--chat-template-file` | Gemma 4 內建模板會拿掉舊輪思考，前文每輪都跟上一輪不同而要重讀；`tools/gemma4_keep_thinking.py <模型.gguf>` 從模型取出內建模板、改成保留思考，存到 `LLM-MODELS/templates/`。代價是上下文漲得比較快。 |
+
+實測 RX 9070 16 GB＋DDR4 2666，Gemma4-26B-A4B Q4_K_M＋MTP 草稿（一次 2 個）、10 萬 context、KV q4_0、`--cpu-moe --moe-cache-mib 8500 --ubatch-size 1024`：3 萬 token 長文預填約 640 tok/s、生成約 39 tok/s；短對話約 48 tok/s。改函式後完整輸出的工作，MTP 61 tok/s → 加 `ngram-mod` 85 tok/s。預填批次 1024→2048 預填約快 5 成，但這張卡上生成會掉，快取越大生成越快；長文的 llama-server 日誌會整理成預填進度、速度與草稿接受率。完整測試數據與分析：[amd-rx9070-gemma4-26b-bench](https://github.com/BBQ2077/amd-rx9070-gemma4-26b-bench)。
 
 ## EXL3 模式（選配，AMD RX 9070 系列）
 

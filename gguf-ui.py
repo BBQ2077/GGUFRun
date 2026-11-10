@@ -668,6 +668,26 @@ NGRAM_TYPES = ("", "ngram-mod", "ngram-simple", "ngram-map-k", "ngram-map-k4v")
 # 模型載入模式相關（本 build 實查旗標）：
 #   -lm  / --load-mode   模型載入方式（預設 auto）
 #   -lzm / --lazy-mode   特定 tensor 是否延後從磁碟讀取（需要 mmap）
+# ngram-mod 草稿的門檻／長度：只在 --spec-type 含 ngram-mod 時送出
+ADV_NGRAM = [
+    ("--spec-ngram-mod-n-match", "ngmatch", "ngram-mod 比對長度",
+     "最近幾個 token 和前文完全一樣才開始抄。llama.cpp 預設 24"),
+    ("--spec-ngram-mod-n-min", "ngmin", "ngram-mod 最短草稿",
+     "抄出來的片段短於這個長度就不用（改用 MTP／DF）。llama.cpp 預設 48；專家放 RAM 時 16 讓短片段也能用"),
+    ("--spec-ngram-mod-n-max", "ngmax", "ngram-mod 最長草稿",
+     "一次最多抄幾個 token。llama.cpp 預設 64；長前文每多 1 個約多 9 ms 驗證，拉高收益很小"),
+]
+
+# 前文快取／存檔點／聊天模板（留空 = 用 llama.cpp 預設）
+ADV_CACHE = [
+    ("--cache-ram", "cacheram", "前文快取上限 MiB",
+     "切換對話時把 KV 暫存在 RAM，回來不用重讀。llama.cpp 預設 8192；0＝關閉。RAM 吃緊可設 4096"),
+    ("--ctx-checkpoints", "ctxckpt", "存檔點數量",
+     "SWA 模型（Gemma）退回舊位置要靠存檔點，每個約數十 MiB RAM。llama.cpp 預設 32"),
+    ("-cms", "cms", "存檔點最小間隔",
+     "每隔多少 token 存一個存檔點。llama.cpp 預設 8192；2048＝編輯／重來舊訊息時重讀較少"),
+]
+
 ADV_LOAD = [
     ("--load-mode", "loadmode", "模型載入模式 (-lm)",
      "auto＝偵測不到就退回 mmap（預設）｜mmap＝記憶體映射｜mlock＝強制常駐 RAM｜mmap+mlock＝兩者"
@@ -1263,6 +1283,9 @@ class App:
         for _r in ADV_SPEC:
             self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
         self.adv["sngram"] = tk.StringVar(value="")    # 附加 n-gram 草稿；空 = 不用
+        for _r in ADV_NGRAM + ADV_CACHE:
+            self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（用 llama.cpp 預設）
+        self.adv["chattpl"] = tk.StringVar(value="")   # --chat-template-file；空 = 用模型內建模板
         for _r in ADV_MOE:
             self.adv[_r[1]] = tk.StringVar(value="")   # 空 = 不送出（全部照 -ngl 放 GPU）
         for _r in ADV_LOAD:
@@ -2389,9 +2412,27 @@ class App:
             else:
                 cmd += ["--spec-type", _ng]
             self._spec_note += f"[投機] 附加 n-gram：{_ng}（輸出照抄前文時一次可接受一大段）\n"
+        # ngram-mod 門檻／長度：本輪 --spec-type 含 ngram-mod 才送
+        _st = cmd[cmd.index("--spec-type") + 1] if "--spec-type" in cmd[_spec_start:] else ""
+        if "ngram-mod" in _st.split(","):
+            for _r in ADV_NGRAM:
+                _v = self.adv[_r[1]].get().strip() if _r[1] in self.adv else ""
+                if _v:
+                    cmd += [_r[0], _v]
         if _fmt_note:
             self._spec_note = _fmt_note + self._spec_note
         self._spec_span = (_spec_start, len(cmd)) if len(cmd) > _spec_start else None
+        # 前文快取／存檔點
+        for _r in ADV_CACHE:
+            _v = self.adv[_r[1]].get().strip() if _r[1] in self.adv else ""
+            if _v:
+                cmd += [_r[0], _v]
+        # 聊天模板檔（--chat-template-file）：空 = 用模型內建模板
+        _ct = self.adv["chattpl"].get().strip() if "chattpl" in self.adv else ""
+        if _ct:
+            if not os.path.isfile(_ct):
+                raise ValueError(f"找不到聊天模板檔：{_ct}")
+            cmd += ["--chat-template-file", _ct]
         _extra = self.adv.get("extra_args")
         if _extra is not None:
             _ev = _extra.get().strip()
@@ -2781,8 +2822,11 @@ class App:
             while True:
                 kind, payload = self._ui_events.get_nowait()
                 if kind == "log":
+                    # 只有原本就停在最底部才跟著捲；往上滑看舊紀錄時不拉回去
+                    _at_bottom = self.log.yview()[1] >= 0.999
                     self.log.insert("end", payload)
-                    self.log.see("end")
+                    if _at_bottom:
+                        self.log.see("end")
                 elif kind == "speed":
                     if payload and hasattr(self, "lbl_speed"):
                         _t = f"上次請求：生成 {payload['tps']:.1f} tok/s"
@@ -3638,6 +3682,42 @@ class App:
         ttk.Label(t5, text="--spec-type 併入 ngram-*    輸出和前文重複時（改程式、引用原文）直接抄一段當草稿，\n"
                            "可與 MTP／DF 同時用；空白＝不用。投機以外的模式選了也會單獨啟用。建議 ngram-mod",
                   foreground="#666", wraplength=520, justify="left").grid(row=_rng, column=2, sticky="w", padx=6)
+        for _j, _r in enumerate(ADV_NGRAM, start=_rng + 1):
+            ttk.Label(t5, text=_r[2]).grid(row=_j, column=0, sticky="w", padx=6, pady=3)
+            _e_ng = ttk.Entry(t5, textvariable=self.adv[_r[1]], width=16)
+            _e_ng.grid(row=_j, column=1, sticky="w", padx=6)
+            self._engine_reg(_r[1], _e_ng)
+            ttk.Label(t5, text=f"{_r[0]}    {_r[3]}（附加 n-gram 選 ngram-mod 才送）", foreground="#666",
+                      wraplength=520, justify="left").grid(row=_j, column=2, sticky="w", padx=6)
+        t9 = ttk.Frame(nb); nb.add(t9, text="前文快取／模板")
+        fill(t9, ADV_CACHE, "多輪對話不用重讀前文的相關設定。留空 = 用 llama.cpp 預設。")
+        _rct = len(ADV_CACHE) + 1
+        ttk.Label(t9, text="聊天模板檔").grid(row=_rct, column=0, sticky="w", padx=6, pady=3)
+        _e_ct = ttk.Entry(t9, textvariable=self.adv["chattpl"], width=46)
+        _e_ct.grid(row=_rct, column=1, sticky="w", padx=6)
+        _bct = ttk.Frame(t9)
+        _bct.grid(row=_rct, column=2, sticky="w", padx=6)
+
+        def _pick_ct():
+            _d0 = os.path.join(LLM_MODELS, "templates")
+            f = filedialog.askopenfilename(
+                title="選擇聊天模板檔", initialdir=_d0 if os.path.isdir(_d0) else LLM_MODELS,
+                filetypes=[("Jinja 模板", "*.jinja"), ("所有檔案", "*.*")], parent=None)
+            if f:
+                self.adv["chattpl"].set(os.path.normpath(f))
+
+        _b_ct = ttk.Button(_bct, text="📂 瀏覽…", command=_pick_ct)
+        _b_ct.pack(side="left")
+        _b_ctx = ttk.Button(_bct, text="✕", width=3, command=lambda: self.adv["chattpl"].set(""))
+        _b_ctx.pack(side="left", padx=4)
+        ttk.Label(t9, text="--chat-template-file    空白＝用模型內建模板。\n"
+                           "Gemma4 保留舊輪思考：用 tools\\gemma4_keep_thinking.py <模型.gguf> 產生，存在 LLM-MODELS\\templates\n"
+                           "（多輪不用重讀上一輪回答、工具前後思考不斷線；代價是上下文漲得比較快）",
+                  foreground="#666", justify="left", wraplength=620).grid(
+            row=_rct + 1, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 6))
+        self._engine_reg("chattpl", _e_ct)
+        self._engine_reg("chattpl", _b_ct)
+        self._engine_reg("chattpl", _b_ctx)
         t7 = ttk.Frame(nb); nb.add(t7, text="LoRA")
         _lora_note = ("LoRA adapter（.gguf）。啟動時送 --lora <路徑>；留空 = 不送。\n"
                       "★ 需搭配支援 LoRA 的執行檔；且 LoRA 是綁在「哪一顆基底模型」上，\n"
@@ -3723,7 +3803,7 @@ class App:
 
         bf = ttk.Frame(w)
         bf.pack(fill="x", padx=10, pady=(4, 2))
-        b_all = ttk.Button(bf, text=f"🧹 全部清空（{len(ADV_CORE+ADV_OPT+ADV_SPEC+ADV_MOE+ADV_LOAD+ADV_LORA+ADV_EXTRA)+1} 項）",
+        b_all = ttk.Button(bf, text=f"🧹 全部清空（{len(ADV_CORE+ADV_OPT+ADV_SPEC+ADV_NGRAM+ADV_CACHE+ADV_MOE+ADV_LOAD+ADV_LORA+ADV_EXTRA)+2} 項）",
                            command=self._clear_all)
         b_all.pack(side="left", padx=4)
         Tip(b_all, "把全部參數（含「基本」4 項、「投機解碼」、MoE 層數、載入模式）全部清空，\n"
@@ -3764,7 +3844,7 @@ class App:
 
     def _clear_all(self):
         """清空全部參數（含「基本」「投機解碼」「MoE」「載入模式」）→ 啟動時用 llama.cpp 內建預設。"""
-        _all = ADV_CORE + ADV_OPT + ADV_SPEC + ADV_MOE + ADV_LOAD + ADV_LORA + ADV_EXTRA
+        _all = ADV_CORE + ADV_OPT + ADV_SPEC + ADV_NGRAM + ADV_CACHE + ADV_MOE + ADV_LOAD + ADV_LORA + ADV_EXTRA
         _n = len(_all)
         if not messagebox.askyesno(
                 f"清空全部 {_n} 項參數",
@@ -3779,7 +3859,7 @@ class App:
             self.adv[r[1]].set("")
             n += 1
         # 思考強度 / LoRA 強度有專屬 UI（不在清單內）→ 一起清
-        for _extra in ("rea_effort", "lora_scale", "sngram"):
+        for _extra in ("rea_effort", "lora_scale", "sngram", "chattpl"):
             if _extra in self.adv:
                 self.adv[_extra].set("")
                 n += 1
