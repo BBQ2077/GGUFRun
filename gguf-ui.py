@@ -743,15 +743,19 @@ def load_presets():
         if isinstance(d, dict):
             d.setdefault("templates", {})
             d.setdefault("bind", {})
-            d.setdefault("default", "")
+            d.pop("default", None)
+            d.setdefault("default_model", "")
             d.setdefault("runtime_of", {})
+            d.setdefault("chattpl_of", {})
             if isinstance(d["templates"], dict) and isinstance(d["bind"], dict):
                 if not isinstance(d["runtime_of"], dict):
                     d["runtime_of"] = {}
+                if not isinstance(d["chattpl_of"], dict):
+                    d["chattpl_of"] = {}
                 return d
     except Exception:
         pass
-    return {"templates": {}, "bind": {}, "default": "", "runtime_of": {}}
+    return {"templates": {}, "bind": {}, "default_model": "", "runtime_of": {}, "chattpl_of": {}}
 
 
 def save_presets(d):
@@ -1567,8 +1571,17 @@ class App:
         # 記住「已解析模板狀態」的實際模型路徑。開機先留空，讓 force=True
         # 也走一次完整模型切換流程，清掉 ui-settings.json 可能殘留的舊模型 LoRA。
         self._tpl_model_key = ""
-        # 切換主模型 → 自動套用綁定/預設模板
+        # 開機主模型：有設「預設模型」且在清單裡就用它，否則沿用上次儲存的模型
+        _dm = self._presets.get("default_model", "")
+        if isinstance(_dm, str) and _dm:
+            _hit = next((lab for lab, p in self._model_map.items()
+                         if os.path.normcase(p) == os.path.normcase(fix_path(_dm))), "")
+            if _hit and _hit != self.model.get():
+                self.model.set(_hit)
+        # 切換主模型 → 自動套用綁定模板
         self.model.trace_add("write", self._tpl_on_model_change)
+        # 手動選／清聊天模板檔 → 記到目前主模型名下
+        self.adv["chattpl"].trace_add("write", self._ct_remember)
 
         # --- 控制區 ---
         ctl = ttk.Frame(inner)
@@ -1627,11 +1640,11 @@ class App:
         _b4 = ttk.Button(_tr, text="🗑 刪除模板", command=self._tpl_delete)
         _b4.pack(side="left", padx=3)
         Tip(_b4, "刪除目前選的模板（有綁定它的模型會一併解除）。")
-        _b5 = ttk.Button(_tr, text="⭐ 設為預設模板", command=self._tpl_set_default)
+        _b5 = ttk.Button(_tr, text="⭐ 設為預設模型", command=self._model_set_default)
         _b5.pack(side="left", padx=3)
-        Tip(_b5, "把目前選的模板設為「預設模板」。\n"
-                 "之後選到『沒有個別綁定』的模型時，會自動套用這個模板。\n"
-                 "（個別綁定優先於預設模板）")
+        Tip(_b5, "把目前選的主模型設為「預設模型」：每次開啟 UI 先選它。\n"
+                 "它有綁定模板就一併套用；沒綁定就用空白設定。\n"
+                 "再按一次（同一顆）＝取消預設模型。")
         self.lbl_tpl = ttk.Label(_tr, text="", foreground="#666")
         self.lbl_tpl.pack(side="left", padx=10)
         self._tpl_refresh_ui()
@@ -3034,12 +3047,15 @@ class App:
     # 埠不進模板。草稿路徑 "" = 自動配對、"-" = 不使用外掛 DF。
     _TPL_KEYS = ("mode", "ctx", "ngl", "ngld", "ctk", "ctv", "rbud",
                  "fa", "nkvo", "think", "jinja", "runtime", "model_path", "drafter_path")
+    # 綁定在「主模型」上的欄位：不進參數模板，各模型各記一份，新模型一律空白。
+    _MODEL_SCOPED_ADV = ("chattpl",)
 
     def _tpl_snapshot(self):
         """把「目前 UI 上的主模型、草稿模型、啟動設定＋進階參數」抓成一份模板內容。"""
         cur = self._collect_settings()
         snap = {k: cur[k] for k in self._TPL_KEYS}
-        snap["adv"] = {k: v.get() for k, v in self.adv.items()}
+        snap["adv"] = {k: v.get() for k, v in self.adv.items()
+                       if k not in self._MODEL_SCOPED_ADV}
         return snap
 
     def _select_drafter_path(self, dp):
@@ -3115,6 +3131,8 @@ class App:
         if not isinstance(adv, dict):
             adv = {}
         for k, var in self.adv.items():
+            if k in self._MODEL_SCOPED_ADV:
+                continue                # 聊天模板檔跟著主模型走（chattpl_of），不隨參數模板套用
             var.set(adv[k] if isinstance(adv.get(k), str) else "")
         if not self.adv["vision"].get():
             self.adv["vision"].set("off")
@@ -3131,19 +3149,13 @@ class App:
         self._lora_try_ts = 0
 
     _TPL_NONE = "（不使用模板）"
-    _TPL_DEFAULT = "（預設模板）"
 
     def _tpl_current_name(self):
-        """目前下拉選的模板名；選到哨兵值（不使用/預設）時回傳空字串。"""
+        """目前下拉選的模板名；選到「不使用模板」時回傳空字串。"""
         if not hasattr(self, "tpl"):
             return ""
         v = self.tpl.get()
-        return "" if v in ("", self._TPL_NONE, self._TPL_DEFAULT) else v
-
-    def _tpl_default_name(self):
-        """目前設定的『預設模板』（沒綁定的模型會自動用它）；沒有則回傳空字串。"""
-        d = self._presets.get("default", "")
-        return d if isinstance(d, str) and d in self._presets["templates"] else ""
+        return "" if v in ("", self._TPL_NONE) else v
 
     def _tpl_store_current(self, name=None, quiet=False):
         """把目前設定存回（指定或目前的）模板。"""
@@ -3157,7 +3169,7 @@ class App:
         return ok
 
     def _tpl_refresh_ui(self):
-        """把模板清單同步到下拉選單（含預設模板標記）。"""
+        """把模板清單同步到下拉選單。"""
         if not hasattr(self, "cb_tpl"):
             return
         names = [self._TPL_NONE] + sorted(self._presets["templates"])
@@ -3167,15 +3179,14 @@ class App:
             self.tpl.set(cur)
         else:
             self.tpl.set(self._TPL_NONE)
-        dft = self._tpl_default_name()
         self._tpl_status()
 
     def _tpl_status(self, note=""):
         """模板區右側狀態列的唯一寫入點（避免多處覆蓋彼此的文字）。"""
         if not hasattr(self, "lbl_tpl"):
             return
-        dft = self._tpl_default_name()
-        base = (f"預設模板：{dft}（未綁定的模型會自動套用）" if dft else "尚未設定預設模板")
+        dm = self._presets.get("default_model", "") if hasattr(self, "_presets") else ""
+        base = (f"預設模型：{os.path.basename(dm)}" if isinstance(dm, str) and dm else "尚未設定預設模型")
         self.lbl_tpl.config(text=base + (f"　｜　{note}" if note else ""))
 
     def _tpl_on_pick(self, *_a):
@@ -3253,8 +3264,41 @@ class App:
             return True
         return False
 
+    # ---------- 模型 ↔ 聊天模板檔（presets.json 的 "chattpl_of"）----------
+    # 聊天模板檔只屬於選它的那顆模型：切模型時換成該模型記住的檔，沒記過＝空白（用內建模板）。
+    def _ct_sync(self, path):
+        """把主模型記住的聊天模板檔套到欄位；沒記錄就清空。"""
+        if "chattpl" not in self.adv:
+            return
+        ct = self._presets.get("chattpl_of", {}).get(self._rt_key(path), "") if path else ""
+        if self.adv["chattpl"].get() != ct:
+            self._ct_busy = True
+            try:
+                self.adv["chattpl"].set(ct)
+            finally:
+                self._ct_busy = False
+
+    def _ct_remember(self, *_a):
+        """使用者手動選／清聊天模板檔 → 記到目前主模型名下。"""
+        if getattr(self, "_loading", False) or getattr(self, "_tpl_busy", False) \
+                or getattr(self, "_ct_busy", False):
+            return
+        mp = self.model_path()
+        if not mp:
+            return
+        ct = self.adv["chattpl"].get().strip()
+        table = self._presets.setdefault("chattpl_of", {})
+        key = self._rt_key(mp)
+        if table.get(key, "") == ct:
+            return
+        if ct:
+            table[key] = ct
+        else:
+            table.pop(key, None)
+        save_presets(self._presets)
+
     def _tpl_on_model_change(self, *_a, force=False):
-        """切換主模型 → 套用綁定模板；沒綁定則套用「預設模板」；都沒有則不動。
+        """切換主模型 → 套用綁定模板；沒綁定就不套模板（只還原這顆模型記住的執行檔）。
 
         force=True 用於「開機載入」：此時 trace 尚未生效，但仍要套用模板。
         開機時（force）若沒綁模板不做任何事——保留使用者上次的執行檔選擇，
@@ -3263,6 +3307,7 @@ class App:
         if getattr(self, "_loading", False) and not force:
             return
         mp = self.model_path()
+        self._ct_sync(mp)
         if not mp:
             return
         if getattr(self, "_tpl_picking", False):
@@ -3273,7 +3318,7 @@ class App:
         model_changed = model_key != getattr(self, "_tpl_model_key", "")
         if model_changed:
             # LoRA 是基底模型專屬資產：模型真的換了時先清掉來源模型的 LoRA，
-            # 再由目的模型的綁定/預設模板恢復自己的值。僅重掃同一路徑不會誤清。
+            # 再由目的模型的綁定模板恢復自己的值。僅重掃同一路徑不會誤清。
             self._tpl_busy = True
             try:
                 self._clear_lora_state()
@@ -3284,21 +3329,13 @@ class App:
         if not name:
             name = self._presets["bind"].get(os.path.basename(mp))
         src = "此模型綁定"
-        if not (name and name in self._presets["templates"]):
-            name = self._tpl_default_name()
-            src = "預設模板"
         if name and name in self._presets["templates"]:
             self._tpl_busy = True
             try:
                 self.tpl.set(name)
                 self._tpl_apply(self._presets["templates"][name])
                 # 選模型自動套模板：主模型保持你選的那顆，草稿跟著模板換。
-                # 「預設模板」是套給沒綁定的任意模型，只有模板記錄的就是這顆時才換草稿。
-                _t = self._presets["templates"][name]
-                _tmp = _t.get("model_path")
-                if src == "此模型綁定" or (isinstance(_tmp, str) and _tmp
-                                            and os.path.normcase(fix_path(_tmp)) == os.path.normcase(mp)):
-                    self._tpl_apply_drafter(_t, mp)
+                self._tpl_apply_drafter(self._presets["templates"][name], mp)
             finally:
                 self._tpl_busy = False
             self._tpl_note = f"[模板] 已自動套用「{name}」（{src}）\n"
@@ -3310,8 +3347,9 @@ class App:
             self.tpl.set(self._TPL_NONE)
             self._tpl_busy = False
             self._tpl_note = ""
-            if force and not self._tpl_default_name():
-                return          # 開機且無綁模板/預設模板 → 保留上次的執行檔
+            if force:
+                self._rt_restore(mp)   # 開機且無綁模板 → 有記錄就還原，沒有就保留上次的執行檔
+                return
             if not self._rt_restore(mp):
                 # 這顆模型從沒被記住過 → 回到預設（清單第一套），
                 # 不要沿用上一顆模型的執行檔。
@@ -3380,21 +3418,27 @@ class App:
         if save_presets(self._presets):
             self._log(f"[模板] 已解除綁定：{os.path.basename(mp)}\n")
             self._tpl_note = ""
-            self._tpl_model_key = ""  # 立即重新解析：套預設模板，或清除原模板 LoRA
+            self._tpl_model_key = ""  # 立即重新解析：清除原模板 LoRA
             self._tpl_on_model_change()
             if self._sync_model_fn:
                 self._sync_model_fn()
 
-    def _tpl_set_default(self):
-        """把目前選的模板設為「預設模板」（未綁定的模型會自動套用）。"""
-        name = self._tpl_current_name()
-        if not name:
-            messagebox.showwarning("沒有模板", "請先在上面的下拉選一個模板。")
+    def _model_set_default(self):
+        """把目前主模型設為「預設模型」（開啟 UI 先選它）；已是預設再按一次＝取消。"""
+        mp = self.model_path()
+        if not mp:
+            messagebox.showwarning("沒有模型", "請先在主模型欄位選一個模型。")
             return
-        self._presets["default"] = name
+        cur = self._presets.get("default_model", "")
+        if isinstance(cur, str) and cur and os.path.normcase(cur) == os.path.normcase(mp):
+            self._presets["default_model"] = ""
+            msg = f"[模型] 已取消預設模型：{os.path.basename(mp)}\n"
+        else:
+            self._presets["default_model"] = mp
+            msg = f"[模型] 已把 {os.path.basename(mp)} 設為預設模型（開啟 UI 先選它）\n"
         if save_presets(self._presets):
-            self._log(f"[模板] 已把「{name}」設為預設模板（未綁定的模型會自動套用）\n")
-            self._tpl_refresh_ui()
+            self._log(msg)
+            self._tpl_status()
         else:
             messagebox.showerror("儲存失敗", "無法寫入 presets.json")
 
@@ -3774,7 +3818,7 @@ class App:
         _b_ct.pack(side="left")
         _b_ctx = ttk.Button(_bct, text="✕", width=3, command=lambda: self.adv["chattpl"].set(""))
         _b_ctx.pack(side="left", padx=4)
-        ttk.Label(t9, text="--chat-template-file    空白＝用模型內建模板。\n"
+        ttk.Label(t9, text="--chat-template-file    空白＝用模型內建模板。跟著主模型記住，新模型預設空白。\n"
                            "Gemma4 保留舊輪思考：用 tools\\gemma4_keep_thinking.py <模型.gguf> 產生，存在 LLM-MODELS\\templates\n"
                            "（多輪不用重讀上一輪回答、工具前後思考不斷線；代價是上下文漲得比較快）",
                   foreground="#666", justify="left", wraplength=620).grid(
